@@ -269,15 +269,19 @@ async function cmdTelegram(argv: string[]): Promise<void> {
   }
 
   const masterPassphrase =
-    process.env.ARCBOT_MASTER_PASSPHRASE ?? (await promptSecret('Master passphrase: '))
+    process.env.ARCBOT_MASTER_PASSPHRASE?.trim() ?? (await promptSecret('Master passphrase: '))
   closePrompts()
   if (masterPassphrase.length < 12) {
     throw new Error('master passphrase must be at least 12 characters')
   }
 
   const { MultiOrchestrator } = await import('./multi/multiOrchestrator.js')
+  const { StatusBoard } = await import('./multi/status.js')
 
   const registry = new UserRegistry(masterPassphrase, cfg.defaultCaps)
+  // Shared between the watcher (writes) and the Telegram menu (reads), so a
+  // user can see which step their order is on instead of guessing.
+  const status = new StatusBoard()
 
   // The bot needs a way to message users; the orchestrator needs the bot's
   // sendMessage. Build the bot first, then the orchestrator wired to it.
@@ -288,6 +292,7 @@ async function cmdTelegram(argv: string[]): Promise<void> {
     registry,
     networks,
     dryRun: !live,
+    status,
     onArm: (user) => {
       void orchestrator?.onUserArmed(user).catch((err) =>
         log.error({ err: (err as Error).message }, 'onUserArmed failed'),
@@ -307,10 +312,10 @@ async function cmdTelegram(argv: string[]): Promise<void> {
     }
   }
 
-  orchestrator = new MultiOrchestrator({ registry, networks, dryRun: !live, notify })
+  orchestrator = new MultiOrchestrator({ registry, networks, dryRun: !live, notify, status })
 
   let stopping = false
-  const shutdown = async () => {
+  const shutdown = async (code = 0) => {
     if (stopping) return
     stopping = true
     log.info('stopping bot and orchestrator')
@@ -322,7 +327,7 @@ async function cmdTelegram(argv: string[]): Promise<void> {
     } catch (err) {
       log.warn({ err: (err as Error).message }, 'bot.stop error')
     }
-    process.exit(0)
+    process.exit(code)
   }
   process.on('SIGINT', () => void shutdown())
   process.on('SIGTERM', () => void shutdown())
@@ -330,7 +335,12 @@ async function cmdTelegram(argv: string[]): Promise<void> {
   log.info('starting telegram bot + launch watcher')
   // Run the launch watcher alongside the bot. The bot handles commands; the
   // orchestrator watches for Arc and executes armed users at launch.
-  void orchestrator.start().catch((err) => log.error({ err: (err as Error).message }, 'orchestrator crashed'))
+  // If the watcher dies, armed users would sit forever believing their order
+  // is live. A container that exits gets restarted; one that lies does not.
+  void orchestrator.start().catch((err) => {
+    log.error({ err: (err as Error).message }, 'FATAL: launch watcher crashed - exiting so the container restarts')
+    void shutdown(1)
+  })
   await bot.start({ onStart: (info) => log.info({ username: info.username }, 'telegram bot online') })
 }
 
@@ -341,7 +351,7 @@ async function cmdTelegram(argv: string[]): Promise<void> {
 async function loadRegistryForOperator() {
   const { UserRegistry } = await import('./multi/users.js')
   const masterPassphrase =
-    process.env.ARCBOT_MASTER_PASSPHRASE ?? (await promptSecret('Master passphrase: '))
+    process.env.ARCBOT_MASTER_PASSPHRASE?.trim() ?? (await promptSecret('Master passphrase: '))
   closePrompts()
   if (masterPassphrase.length < 12) throw new Error('master passphrase must be at least 12 characters')
   const { loadTelegramConfig } = await import('./multi/auth.js')

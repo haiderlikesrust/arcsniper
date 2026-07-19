@@ -246,6 +246,68 @@ describe('handler ordering', () => {
   })
 })
 
+describe('markdown escaping', () => {
+  // A token symbol or error message containing _ * ` [ made rootText
+  // unparseable. editMessageText 400s, the retry re-sends the same broken text,
+  // the error is swallowed - and the menu silently never renders again.
+  test('escapes every Telegram Markdown control character', async () => {
+    const { escapeMd } = await import('../src/multi/status.ts')
+    assert.equal(escapeMd('SAFE_MOON'), 'SAFE\\_MOON')
+    assert.equal(escapeMd('*MOON*'), '\\*MOON\\*')
+    assert.equal(escapeMd('a`b'), 'a\\`b')
+    assert.equal(escapeMd('[x]'), '\\[x\\]')
+  })
+
+  test('escapes a realistic hostile token symbol and revert string', async () => {
+    const { escapeMd } = await import('../src/multi/status.ts')
+    const hostile = 'symbol mismatch: contract says "PEPE_v2", expects "*REAL*"'
+    const out = escapeMd(hostile)
+    // Every control char must be backslash-prefixed.
+    for (const m of out.matchAll(/(^|[^\\])([_*`[\]])/g)) {
+      assert.fail(`unescaped ${m[2]} in: ${out}`)
+    }
+  })
+
+  test('leaves ordinary text and addresses untouched', async () => {
+    const { escapeMd } = await import('../src/multi/status.ts')
+    assert.equal(escapeMd('Burning 25.0 USDC on Base'), 'Burning 25.0 USDC on Base')
+    assert.equal(
+      escapeMd('0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913'),
+      '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913',
+    )
+  })
+
+  test('the bot escapes status detail and wallet labels', () => {
+    const src = readFileSync(new URL('../src/multi/bot.ts', import.meta.url), 'utf8')
+    assert.match(src, /escapeMd\(mine\.detail\)/, 'status detail must be escaped')
+    assert.match(src, /escapeMd\(w\.label\)/, 'wallet labels must be escaped')
+  })
+
+  test('render falls back to plain text on a parse failure', () => {
+    const src = readFileSync(new URL('../src/multi/bot.ts', import.meta.url), 'utf8')
+    assert.match(src, /can't parse entities/, 'render must detect Markdown parse errors')
+    assert.match(src, /stripMd/, 'render must have a plain-text fallback')
+  })
+})
+
+describe('prompt cancellation', () => {
+  // Opening "Set withdraw address", typing /menu, then pasting a token address
+  // registered that token as the WITHDRAWAL destination. Commands never reach
+  // the message:text handler, so the prompt was never cleared there.
+  const src = readFileSync(new URL('../src/multi/bot.ts', import.meta.url), 'utf8')
+
+  test('prompts are cancelled in the global guard, not the text handler', () => {
+    const guardEnd = src.indexOf('// Secret detection, above every handler.')
+    const cancel = src.indexOf('cancelled pending prompt')
+    assert.ok(cancel > 0 && cancel < guardEnd, 'prompt cancellation must run in the global middleware')
+  })
+
+  test('both commands and navigation cancel an open prompt', () => {
+    assert.match(src, /const isCommand = \(ctx\.message\?\.text \?\? ''\)\.startsWith\('\/'\)/)
+    assert.match(src, /const isNav = ctx\.callbackQuery\?\.data\?\.startsWith\('nav:'\)/)
+  })
+})
+
 describe('panic is command-only', () => {
   const src = readFileSync(new URL('../src/multi/bot.ts', import.meta.url), 'utf8')
 

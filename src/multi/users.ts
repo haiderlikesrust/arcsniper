@@ -334,7 +334,12 @@ export class UserRegistry {
       origin: 'generated',
       createdAt: new Date().toISOString(),
     }
-    this.persist({ ...user, wallets: [...user.wallets, wallet] })
+    // Re-read AFTER the ~1s scrypt above. Persisting the stale snapshot would
+    // clobber anything written during that window - including another wallet
+    // whose deposit address was already shown to the user, or a /panic freeze.
+    const fresh = this.cache.get(telegramId)
+    if (!fresh) throw new Error('no such user')
+    this.persist({ ...fresh, wallets: [...fresh.wallets, wallet] })
     log.info({ telegramId, address: wallet.address }, 'added generated wallet')
     return wallet
   }

@@ -10,6 +10,7 @@ import { erc20Abi } from '../abi.js'
 import { audit } from './audit.js'
 import { savePending, loadPending, clearPending, printRecoveryInstructions } from '../bridge/recovery.js'
 import { UserRegistry, type StoredUser } from './users.js'
+import { StatusBoard } from './status.js'
 
 /**
  * Multi-user trading engine.
@@ -31,6 +32,8 @@ export interface MultiOrchestratorOptions {
   networks: NetworksConfig
   dryRun: boolean
   notify: Notifier
+  /** Shared live status, surfaced in the Telegram menu. */
+  status: StatusBoard
   /** Max users bridging/buying at once. Keeps RPC load and nonce pressure sane. */
   concurrency?: number
 }
@@ -71,6 +74,9 @@ export class MultiOrchestrator {
     await this.preArmAll()
 
     this.detector = new LaunchDetector(this.opts.networks)
+    this.detector.on('poll', ({ attempt, nextDelayMs }) =>
+      this.opts.status.setGlobal({ checks: attempt, lastCheckAt: Date.now(), nextCheckInMs: nextDelayMs }),
+    )
     this.detector.on('chain-live', (ev) => this.onChainLive(ev))
     this.detector.on('bridge-ready', (ev) => {
       void this.onBridgeReady(ev).catch((err) => log.error({ err: (err as Error).message }, 'bridge-ready handler failed'))
@@ -135,12 +141,14 @@ export class MultiOrchestrator {
       nativeCurrency: this.opts.networks.destination.nativeCurrency,
     })
     this.arcClient = makeClient(this.arcChain, ev.allEndpoints)
+    this.opts.status.setGlobal({ chainLive: true, chainId: ev.chainId })
     log.info({ chainId: ev.chainId }, 'Arc chain live; awaiting bridge readiness')
   }
 
   private async onBridgeReady(ev: BridgeReadyEvidence): Promise<void> {
     this.arcDomain = ev.domain
     this.launchConfirmed = true
+    this.opts.status.setGlobal({ bridgeReady: true, cctpDomain: ev.domain })
     log.info({ domain: ev.domain }, 'LAUNCH CONFIRMED; executing all armed users')
 
     const users = this.opts.registry.all().filter((u) => u.armed && !u.frozen)
@@ -161,7 +169,11 @@ export class MultiOrchestrator {
       while (queue.length) {
         const u = queue.shift()
         if (!u) break
-        await this.runUser(u)
+        // runUser catches its own errors, but a non-Error throw (or a bug in the
+        // catch itself) would kill this worker and strand every queued user.
+        await this.runUser(u).catch((err) =>
+          log.error({ telegramId: u.telegramId, err: String(err) }, 'runUser escaped its own catch'),
+        )
       }
     })
     await Promise.all(workers)
@@ -195,6 +207,7 @@ export class MultiOrchestrator {
     } catch (err) {
       this.runState.set(id, 'failed')
       const msg = (err as Error).message
+      this.opts.status.setUser(id, 'failed', msg.slice(0, 200))
       log.error({ telegramId: id, err: msg }, 'user run failed')
       await this.safeNotify(id, `Your order failed: ${msg}\n\nYour funds are safe. Use /status to check, or /withdraw.`)
     }
@@ -229,6 +242,7 @@ export class MultiOrchestrator {
       // If we can't read it, treat as zero - worst case we wait the full timeout.
     }
 
+    this.opts.status.setUser(id, 'bridging', `Burning ${formatUsdc(amount)} USDC on Base`)
     await this.safeNotify(id, `Bridging ${formatUsdc(amount)} USDC from Base to Arc...`)
 
     const result = await bridge(
@@ -270,10 +284,12 @@ export class MultiOrchestrator {
       return
     }
 
+    this.opts.status.setUser(id, 'awaiting_mint', 'Burn confirmed - waiting for Circle to mint on Arc', result.burnTxHash)
     await this.waitForArcCredit(id, account.address, balanceBeforeArc)
     // Funds confirmed on Arc - the pending record has served its purpose.
     clearPending(this.recoveryPath(id))
     audit('bridge.completed', id, { amount: formatUsdc(amount) })
+    this.opts.status.setUser(id, 'bridged', 'Funds confirmed on Arc')
     await this.safeNotify(id, 'Bridged funds confirmed on Arc.')
   }
 
@@ -326,6 +342,7 @@ export class MultiOrchestrator {
     }
 
     const account = await this.opts.registry.unlock(id)
+    this.opts.status.setUser(id, 'buying', `Safety checks on ${latest.tokenAddress}`)
     await this.safeNotify(id, `Running safety checks on ${latest.tokenAddress}...`)
 
     const result = await buy(this.arcClient!, account, this.arcChain!, this.arcRpcUrl!, {
@@ -333,7 +350,10 @@ export class MultiOrchestrator {
       usdc,
       spendAmount: parseUsdc(latest.spendUsdc),
       maxSlippageBps: latest.maxSlippageBps,
-      minPoolLiquidityUsdc: parseUsdc(latest.caps.maxSpendUsdc) / 25n, // conservative floor
+      // Floor must scale with what THIS trade spends, not with the account cap:
+      // a 250 cap gave a 10 USDC floor regardless of spend. 10x the spend keeps
+      // price impact sane.
+      minPoolLiquidityUsdc: parseUsdc(latest.spendUsdc) * 10n,
       requireSellSimulation: true,
       // No per-user expected symbol today (users /arm with an address only).
       // The other gates - liquidity floor and sell simulation - still apply.
@@ -351,6 +371,7 @@ export class MultiOrchestrator {
 
     if (result.executed) {
       audit('buy.executed', id, { token: latest.tokenAddress, tx: result.txHash })
+      this.opts.status.setUser(id, 'done', `Bought ${latest.tokenAddress}`, result.txHash ?? undefined)
       await this.safeNotify(id, `BOUGHT. Tx: ${result.txHash}\nReceived: ${result.actualReceived?.toString() ?? '?'} tokens.`)
       // Disarm so a later re-run doesn't buy again.
       this.opts.registry.update(id, { armed: false })
@@ -358,6 +379,7 @@ export class MultiOrchestrator {
       await this.safeNotify(id, 'DRY RUN: buy simulated (no funds spent).')
     } else {
       audit('buy.vetoed', id, { token: latest.tokenAddress, vetoes: result.report.vetoes })
+      this.opts.status.setUser(id, 'vetoed', result.report.vetoes[0] ?? 'refused by safety checks')
       await this.safeNotify(
         id,
         `Buy REFUSED by safety checks - no funds spent:\n- ${result.report.vetoes.join('\n- ')}\n\n` +

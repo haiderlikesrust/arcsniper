@@ -9,6 +9,7 @@ import { isAllowed, isAdmin, denyAccess, looksLikeSecret, RateLimiter, type Tele
 import { activeWallet, UserRegistry, type StoredUser, type StoredWallet } from './users.js'
 import { withdrawAll } from './withdraw.js'
 import { TicketStore, stateHash } from './tickets.js'
+import { StatusBoard, phaseLabel, phaseProgress, ago, escapeMd } from './status.js'
 
 /**
  * Button-driven Telegram UI.
@@ -32,6 +33,8 @@ export interface BotDeps {
   registry: UserRegistry
   networks: NetworksConfig
   dryRun: boolean
+  /** Live pipeline status, written by the launch watcher. */
+  status: StatusBoard
   onArm?: (user: StoredUser) => void
   onPanic?: (user: StoredUser) => void
 }
@@ -94,6 +97,20 @@ export function createBot(token: string, deps: BotDeps): Bot {
         await ctx.reply(`This bot is invite-only.\n\nYour Telegram ID is ${id} - send it to the operator.`)
       }
       return
+    }
+
+    // Cancel any open prompt as soon as the user does something else.
+    // This must live HERE, not in the message:text handler: registered commands
+    // never reach that handler (bot.command handlers do not call next()), so a
+    // prompt would survive /menu and then capture an unrelated address. The
+    // concrete hazard: open 'Set withdraw address', type /menu, go to Target,
+    // paste a token address - and it becomes your WITHDRAWAL destination.
+    const isCommand = (ctx.message?.text ?? '').startsWith('/')
+    const isNav = ctx.callbackQuery?.data?.startsWith('nav:') === true
+    if ((isCommand || isNav) && pendingInput.has(id)) {
+      const dropped = pendingInput.get(id)
+      pendingInput.delete(id)
+      log.debug({ telegramId: id, kind: dropped?.kind }, 'cancelled pending prompt - user navigated away')
     }
 
     // Secret detection, above every handler.
@@ -176,16 +193,57 @@ export function createBot(token: string, deps: BotDeps): Bot {
       : ''
     return (
       `*arcsniper*${deps.dryRun ? '  _(DRY RUN - nothing spends)_' : ''}\n\n` +
-      `Wallet: *${w.label}* \`${short(w.address)}\`\n` +
+      `Wallet: *${escapeMd(w.label)}* \`${short(w.address)}\`\n` +
       `USDC ${bal.usdc}  |  ETH ${bal.eth}  (Base)\n\n` +
       `Withdraw to: ${settle.withdrawalAddress ? `\`${short(settle.withdrawalAddress)}\`` : '_not set_'}${pend}\n` +
       `Spend ${user.spendUsdc} / Bridge ${user.bridgeUsdc} USDC  |  Slippage ${user.maxSlippageBps}bps\n` +
       `Target: ${user.tokenAddress ? `\`${short(user.tokenAddress)}\`` : '_none_'}  ` +
-      `${user.armed ? '*ARMED*' : 'not armed'}` +
+      `${user.armed ? '*ARMED*' : 'not armed'}\n\n` +
+      statusBlock(user) +
       (user.frozen
         ? '\n\n*ACCOUNT FROZEN* - ask the operator to unfreeze.'
         : '\n\n_Emergency: send_ `/panic` _to freeze everything._')
     )
+  }
+
+  /**
+   * What is actually happening, right now.
+   *
+   * Two halves: the shared launch watcher (is Arc live yet?) and this user's own
+   * pipeline (which step is my order on?). Without it the bot is a black box
+   * that says nothing for weeks and then fires a burst of messages during the
+   * one minute that matters.
+   */
+  function statusBlock(user: StoredUser): string {
+    const g = deps.status.getGlobal()
+    const mine = deps.status.getUser(user.telegramId)
+
+    let out = '*Status*\n'
+
+    if (!g.chainLive) {
+      out +=
+        `Arc mainnet: _not live yet_\n` +
+        `Watching: ${g.checks} check${g.checks === 1 ? '' : 's'}` +
+        (g.checks > 0 ? `, last ${ago(g.lastCheckAt)}` : '') +
+        (g.nextCheckInMs ? `, next in ~${Math.round(g.nextCheckInMs / 1000)}s` : '')
+    } else if (!g.bridgeReady) {
+      out += `Arc mainnet: *LIVE* (chain ${g.chainId})\nBridge: _waiting for CCTP to deploy_`
+    } else {
+      out += `Arc mainnet: *LIVE* (chain ${g.chainId})\nBridge: *ready* (CCTP domain ${g.cctpDomain})`
+    }
+
+    if (mine && mine.phase !== 'idle') {
+      const bar = phaseProgress(mine.phase)
+      out +=
+        `\n\nYour order: *${phaseLabel(mine.phase)}*` +
+        (bar ? `\n\`${bar}\`` : '') +
+        `\n_${escapeMd(mine.detail)}_ (${ago(mine.updatedAt)})` +
+        (mine.txHash ? `\nTx: \`${mine.txHash}\`` : '')
+    } else if (user.armed) {
+      out += `\n\nYour order: *${phaseLabel('armed')}*\n\`${phaseProgress('armed')}\``
+    }
+
+    return out
   }
 
   async function walletsView(user: StoredUser): Promise<{ text: string; kb: InlineKeyboard }> {
@@ -194,8 +252,8 @@ export function createBot(token: string, deps: BotDeps): Bot {
     for (const w of user.wallets) {
       const active = w.id === user.activeWalletId
       const bal = await balancesFor(w.address as Address)
-      text += `${active ? '> ' : '  '}*${w.label}* (${w.origin})\n\`${w.address}\`\n   ${bal.usdc} USDC | ${bal.eth} ETH\n\n`
-      if (!active) kb.text(`Use "${w.label}"`, ticketData(user, 'wallet.activate', { walletId: w.id })).row()
+      text += `${active ? '> ' : '  '}*${escapeMd(w.label)}* (${w.origin})\n\`${w.address}\`\n   ${bal.usdc} USDC | ${bal.eth} ETH\n\n`
+      if (!active) kb.text(`Use "${escapeMd(w.label)}"`, ticketData(user, 'wallet.activate', { walletId: w.id })).row()
     }
     text +=
       '_The wallet marked ">" is the one that trades._\n\n' +
@@ -251,19 +309,56 @@ export function createBot(token: string, deps: BotDeps): Bot {
     return `t:${tickets.issue(user, action, plan).id}`
   }
 
-  /** Edit the current message, tolerating Telegram's edit quirks. */
+  /**
+   * Edit the current message, tolerating Telegram's edit quirks.
+   *
+   * Critically, this degrades to PLAIN TEXT if Markdown fails to parse. Escaping
+   * (escapeMd) is the first line of defence, but if anything slips through, a
+   * menu the user can still read beats a menu that silently never renders -
+   * which is what happens when the retry re-sends the same unparseable text.
+   */
   async function render(ctx: Context, text: string, kb: InlineKeyboard): Promise<void> {
-    const opts = { parse_mode: 'Markdown' as const, reply_markup: kb }
+    const md = { parse_mode: 'Markdown' as const, reply_markup: kb }
+    const plain = { reply_markup: kb }
+
+    const isUnmodified = (e: unknown) =>
+      e instanceof GrammyError && /message is not modified/i.test(e.description)
+    const isParseError = (e: unknown) =>
+      e instanceof GrammyError && /can't parse entities|can't find end/i.test(e.description)
+
+    if (ctx.callbackQuery?.message) {
+      try {
+        await ctx.editMessageText(text, md)
+        return
+      } catch (err) {
+        if (isUnmodified(err)) return
+        if (isParseError(err)) {
+          log.warn({ err: (err as GrammyError).description }, 'markdown parse failed - falling back to plain text')
+          try {
+            await ctx.editMessageText(stripMd(text), plain)
+            return
+          } catch (e2) {
+            if (isUnmodified(e2)) return
+          }
+        }
+        // otherwise fall through and try a fresh message
+      }
+    }
+
     try {
-      if (ctx.callbackQuery?.message) {
-        await ctx.editMessageText(text, opts)
+      await ctx.reply(text, md)
+    } catch (err) {
+      if (isParseError(err)) {
+        await ctx.reply(stripMd(text), plain).catch(() => {})
         return
       }
-    } catch (err) {
-      if (err instanceof GrammyError && /message is not modified/i.test(err.description)) return
-      // fall through to sending a fresh message
+      log.warn({ err: (err as Error).message }, 'render failed')
     }
-    await ctx.reply(text, opts).catch(() => {})
+  }
+
+  /** Remove Markdown markers so the fallback reads cleanly. */
+  function stripMd(s: string): string {
+    return s.replace(/\\([_*`[\]])/g, '$1').replace(/[*_`]/g, '')
   }
 
   async function renderRoot(ctx: Context, user: StoredUser): Promise<void> {
@@ -355,6 +450,7 @@ export function createBot(token: string, deps: BotDeps): Bot {
         case 'disarm':
           registry.update(user.telegramId, { armed: false })
           audit('target.disarmed', user.telegramId, {})
+          deps.status.clearUser(user.telegramId)
           toast = { text: 'Disarmed.' }
           return void (await renderRoot(ctx, registry.get(ctx.from.id)!))
         case 'cancelwithdraw':
@@ -404,7 +500,7 @@ export function createBot(token: string, deps: BotDeps): Bot {
             )
           return void (await render(
             ctx,
-            `*Withdraw all*\n\nFrom *${w.label}* \`${short(w.address)}\`\n` +
+            `*Withdraw all*\n\nFrom *${escapeMd(w.label)}* \`${short(w.address)}\`\n` +
               `Amount: *${bal.usdc} USDC*\nTo: \`${settled.withdrawalAddress}\`\n\n` +
               `_This cannot be undone._`,
             kb,
@@ -417,7 +513,7 @@ export function createBot(token: string, deps: BotDeps): Bot {
           }
           const kb = new InlineKeyboard()
           for (const w of user.wallets) {
-            kb.text(`${w.label} (${short(w.address)})`, `nav:export_one:${w.id}`).row()
+            kb.text(`${escapeMd(w.label)} (${short(w.address)})`, `nav:export_one:${w.id}`).row()
           }
           kb.text('Cancel', 'nav:wallets')
           return void (await render(
@@ -465,7 +561,7 @@ export function createBot(token: string, deps: BotDeps): Bot {
               .text('Yes, show the key', ticketData(user, 'wallet.export', { walletId: w.id }))
             return void (await render(
               ctx,
-              `*Export "${w.label}"?*\n\n\`${w.address}\`\n\n` +
+              `*Export "${escapeMd(w.label)}"?*\n\n\`${w.address}\`\n\n` +
                 `I will send the private key and delete my message after ${cfg.exportMessageTtlSeconds}s.\n\n` +
                 '*This wallet should be considered compromised afterwards.* Import it ' +
                 'somewhere you control, move the funds to a fresh wallet, and stop using this one.',
@@ -574,7 +670,7 @@ export function createBot(token: string, deps: BotDeps): Bot {
           // menu. Deleting does NOT un-send it - Telegram still received it -
           // but it keeps the key out of scrollback and off a shared screen.
           const sent = await ctx.reply(
-            `*${w.label}*\n\`${result.address}\`\n\n` +
+            `*${escapeMd(w.label)}*\n\`${result.address}\`\n\n` +
               `Private key:\n\`${result.privateKey}\`\n\n` +
               `_This message self-deletes in ${cfg.exportMessageTtlSeconds}s. Copy it now._\n\n` +
               `*Treat this wallet as compromised.* Move its funds to a fresh wallet ` +
@@ -599,6 +695,9 @@ export function createBot(token: string, deps: BotDeps): Bot {
           }
           const updated = registry.update(id, { armed: true })
           audit('target.armed', id, { token: user.tokenAddress, spend: user.spendUsdc })
+          // Clear any terminal status from a PREVIOUS run, otherwise the menu
+          // keeps reporting 'Complete 6/6' over a freshly armed order.
+          deps.status.clearUser(id)
           deps.onArm?.(updated)
           toast = { text: 'ARMED.' }
           await ctx.reply(
@@ -628,8 +727,11 @@ export function createBot(token: string, deps: BotDeps): Bot {
       await ctx.reply('Admins only.')
       return
     }
-    const target = Number((ctx.match?.toString() ?? '').trim())
-    if (!Number.isInteger(target)) {
+    const arg = (ctx.match?.toString() ?? '').trim()
+    // Number('') is 0, which IS an integer - a bare /unfreeze would have
+    // 'unfrozen' user 0 and reported success.
+    const target = arg === '' ? NaN : Number(arg)
+    if (!Number.isInteger(target) || target <= 0) {
       await ctx.reply('Usage: /unfreeze <telegramUserId>')
       return
     }

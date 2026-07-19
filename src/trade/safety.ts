@@ -130,7 +130,9 @@ export async function runSafetyChecks(ctx: SafetyContext): Promise<SafetyReport>
         )
       }
     } catch (err) {
-      warnings.push(`could not read pool liquidity: ${(err as Error).message}`)
+      // Refusing to buy blind is the whole point of this gate - a failed read
+      // must not silently downgrade to 'proceed'.
+      vetoes.push(`could not read pool liquidity: ${(err as Error).message} - refusing to buy blind`)
     }
   }
 
