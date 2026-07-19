@@ -1,0 +1,21 @@
+# NEVER let secrets or user data into an image layer.
+.env
+.env.*
+data/
+state/
+keystore/
+secrets/
+config/telegram.json
+*.keystore.json
+
+# Build/runtime junk not needed in the image.
+node_modules
+dist
+.git
+.gitignore
+*.log
+logs/
+test
+plans
+*.md
+.claude

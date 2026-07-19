@@ -1,0 +1,29 @@
+{
+  "$comment": [
+    "Copy to config/telegram.json and fill in. That file is gitignored.",
+    "",
+    "Get your numeric Telegram ID from @userinfobot. IDs are used rather than",
+    "@usernames because usernames can be changed and reused; IDs cannot.",
+    "",
+    "The bot REFUSES TO START with an empty allowedUserIds list. An open",
+    "custodial bot would let strangers create wallets on your machine.",
+    "",
+    "IMPORTANT: this is a custodial setup. Your machine holds the private keys",
+    "for every user listed here. Only invite people who understand that, and",
+    "keep defaultCaps low enough that a total loss would be survivable for them."
+  ],
+
+  "botTokenEnv": "TELEGRAM_BOT_TOKEN",
+
+  "allowedUserIds": [],
+
+  "adminUserIds": [],
+
+  "defaultCaps": {
+    "$comment": "Hard ceilings per user. Cannot be raised from Telegram - only here.",
+    "maxSpendUsdc": "250.00",
+    "maxBridgeUsdc": "250.00"
+  },
+
+  "rateLimitPerMinute": 20
+}

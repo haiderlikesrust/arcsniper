@@ -1,0 +1,155 @@
+# Telegram bot — multi-user custodial mode
+
+This lets you and your friends control the launch bot from Telegram. **It is custodial:** your machine holds everyone's private keys. Read the risk section before you invite anyone.
+
+---
+
+## What "custodial" means for you
+
+When a friend uses your bot, the bot generates a wallet for them **on your machine**. You hold their key (encrypted). That has consequences you are signing up for:
+
+- **One breach drains everyone.** If your machine is compromised, every user's funds are exposed, not just yours.
+- **You are responsible for their money.** In most places, holding other people's crypto is a regulated activity. This is fine among friends who understand the risk; it is not a public service.
+- **If you lose `data/` or forget the master passphrase, everyone's funds are gone.** There is no recovery.
+
+Keep the per-user caps low (default 250 USDC) so that if the worst happens, it's survivable for everyone.
+
+If that risk is more than you want to carry, run it single-user: put only your own Telegram ID on the allowlist. Same bot, just you, no one else's funds on your machine.
+
+---
+
+## Security built in
+
+The design assumes a friend's Telegram account *will* eventually get hijacked (SIM swap, stolen session). These controls limit the damage:
+
+| Control | What it stops |
+|---|---|
+| **Keys generated server-side, never sent** | No key ever travels through Telegram. The bot refuses any message that looks like a key or seed phrase. |
+| **Withdraw only to a registered address** | Funds can't be sent to an arbitrary address on command. |
+| **24-hour lock on address changes** | A hijacker can't repoint the wallet and drain before the owner notices. First address is also locked if funds are already present. |
+| **`/panic` freeze** | Instantly blocks all spending *and* withdrawals for an account until you (the operator) unfreeze it. |
+| **Slippage capped at 20%** | Blocks the "arm a token I own with 100% slippage" self-rug. |
+| **Per-user hard caps** | Set by you on disk; users can't raise them from chat. |
+| **Allowlist only** | The bot refuses to start with an empty allowlist; strangers can't create wallets. |
+| **Audit log** | Every money movement and security change is recorded in `data/audit.log`. |
+
+These were checked by an adversarial security review; the confirmed findings are all fixed. It is *safer*, not *safe* — custody of others' funds carries irreducible risk.
+
+---
+
+## Setup
+
+**1. Create a Telegram bot**
+
+Message [@BotFather](https://t.me/BotFather), send `/newbot`, follow the prompts, copy the token.
+
+**2. Get your numeric Telegram ID**
+
+Message [@userinfobot](https://t.me/userinfobot). It replies with your ID (a number). Get your friends' IDs the same way.
+
+**3. Configure**
+
+```bash
+cp config/telegram.example.json config/telegram.json
+```
+
+Edit `config/telegram.json`:
+
+```json
+{
+  "allowedUserIds": [11111111, 22222222],
+  "adminUserIds": [11111111],
+  "defaultCaps": { "maxSpendUsdc": "100.00", "maxBridgeUsdc": "110.00" },
+  "rateLimitPerMinute": 20
+}
+```
+
+- `allowedUserIds` — everyone who may use the bot (including you)
+- `adminUserIds` — who can freeze/unfreeze users (just you, probably)
+- `defaultCaps` — the ceiling per user. Start low.
+
+**4. Add the bot token to `.env`**
+
+```
+TELEGRAM_BOT_TOKEN=123456:ABC-your-token-from-botfather
+```
+
+**5. Start it**
+
+```bash
+# Dry run first — nothing spends
+node --import tsx src/index.ts telegram
+
+# When you're ready for real:
+node --import tsx src/index.ts telegram --live
+```
+
+It asks for a **master passphrase** once at startup. This encrypts every user's wallet. Write it down somewhere safe and back up the `data/` folder — losing either loses all funds.
+
+---
+
+## Commands (what your friends do)
+
+**Setup**
+- `/start` — creates their wallet, shows the deposit address
+- `/deposit` — show the deposit address again
+- `/setwithdraw 0x...` — set where their funds can be withdrawn (do this first!)
+- `/status` — balances, settings, state
+
+**Trading**
+- `/set spend 20` — USDC to spend on the buy
+- `/set bridge 25` — USDC to bridge to Arc
+- `/set slippage 300` — max slippage, bps (300 = 3%, max 2000)
+- `/arm 0xToken` — check a token
+- `/confirm` — arm it after reviewing
+- `/disarm` — stand down
+
+**Safety**
+- `/withdraw` — send all USDC to their registered address
+- `/panic` — freeze everything immediately
+
+**Admin (you only)**
+- `/unfreeze <userId>` — lift a freeze after a user secures their account
+- `/users` — list all users and their state
+
+---
+
+## Importing a funded wallet (operator only)
+
+If you want the bot to trade from an **existing funded wallet** instead of a fresh generated one, you import it — but **never through Telegram**. A key in a chat message is a compromised key. Import runs on the host, over your SSH session:
+
+```bash
+# put the key on a RAM disk so it never touches persistent storage
+mkdir -p /dev/shm/imp && echo '0xYOURKEY' > /dev/shm/imp/key.hex
+node --import tsx src/index.ts import --telegram-id 123456 --key-file /dev/shm/imp/key.hex
+rm -rf /dev/shm/imp   # the tool also shreds the file
+```
+
+Guards, all fail-closed:
+- refuses if another user already owns that wallet (no two users share a key)
+- refuses to overwrite an existing wallet that still holds funds (would orphan them) — sweep it first
+- resets the withdrawal address, so the user must `/setwithdraw` fresh (time-locked, since the imported wallet holds funds)
+
+**Export** (backup, or a user leaving) also runs only on the host and prints to your terminal:
+
+```bash
+node --import tsx src/index.ts export --telegram-id 123456 --i-understand-this-exposes-the-key
+```
+
+Users who simply want their money out don't need export — they use `/withdraw`, which sends to their registered address and never exposes a key.
+
+## Operating notes
+
+- **Back up `data/` regularly.** It holds every encrypted wallet, the audit log, and bridge-recovery records. Without it, a disk failure loses everyone's funds. See [DEPLOY.md](DEPLOY.md) for a backup command.
+- **The master passphrase is the master key.** Forgetting it bricks every wallet. There is no reset.
+- **Tell your friends: `/setwithdraw` before depositing.** If they deposit first, the first address set gets time-locked (24h), and they can't withdraw until it clears.
+- **`/panic` also pauses withdrawals.** Deliberate — it stops a hijacker moving funds too. The owner asks you to `/unfreeze` once their account is secure.
+- **At launch, everything runs automatically.** The shared watcher detects Arc, then each armed user's wallet bridges and buys independently. Users get Telegram messages at each step (bridging, funds arrived, bought / refused). One user's failure never affects another.
+
+---
+
+## Notes
+
+- Rehearse on Arc testnet before arming real funds — per-user live trading is new code on tested primitives, and launch day is a bad time for a first run.
+- Invite-only, among people who understand the custody risk. Do not run it as a public bot.
+- Hosting on a VPS with Docker: see [DEPLOY.md](DEPLOY.md).

@@ -1,0 +1,84 @@
+{
+  "$comment": [
+    "Network + CCTP parameters. Values marked verified were confirmed against",
+    "Circle's docs on 2026-07-19. Values marked UNCONFIRMED do not exist yet",
+    "because Arc mainnet has not launched — the bot discovers them at runtime",
+    "and refuses to act on guesses. Do not hardcode a mainnet chainId here."
+  ],
+
+  "source": {
+    "name": "Base",
+    "chainId": 8453,
+    "verified": true,
+    "cctpDomain": 6,
+    "usdc": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
+    "tokenMessengerV2": "0x28b5a0e9C621a5BadaA536219b3a228C8168cf5d",
+    "messageTransmitterV2": "0x81D40F21F12A8F0E3252Bccb954D722d4c464B64",
+    "rpcUrls": ["https://mainnet.base.org"],
+    "explorer": "https://basescan.org"
+  },
+
+  "destination": {
+    "name": "Arc",
+    "chainIdKnown": false,
+    "chainId": null,
+    "knownWrongChainIds": {
+      "$comment": "Guard rails. Detection MUST reject these.",
+      "5042002": "Arc public testnet — not mainnet",
+      "1243": "Unrelated project also called ARC (native currency ARC, not USDC)"
+    },
+    "$cctpComment": [
+      "Leave cctpDomain null: the bot reads it from the destination chain itself",
+      "by calling localDomain() on the MessageTransmitter, which is authoritative.",
+      "Set it only if you want to PIN an expected value — a mismatch then aborts.",
+      "",
+      "The contract addresses below are CCTP v2's canonical deploy addresses.",
+      "Verified 2026-07-19 against live RPCs: identical on Base, Arbitrum and",
+      "Optimism, with localDomain() returning 6, 3 and 2 as documented. Arc is",
+      "expected to deploy at the same addresses. The bot verifies bytecode and",
+      "localDomain() before trusting them, so a wrong guess fails safe."
+    ],
+    "cctpDomain": null,
+    "testnetCctpDomain": 26,
+    "usdc": null,
+    "messageTransmitterV2": "0x81D40F21F12A8F0E3252Bccb954D722d4c464B64",
+    "tokenMessengerV2": "0x28b5a0e9C621a5BadaA536219b3a228C8168cf5d",
+
+    "rpcCandidates": [
+      "https://rpc.arc.network",
+      "https://rpc.mainnet.arc.network",
+      "https://arc-mainnet.rpc.thirdweb.com",
+      "https://arc.drpc.org"
+    ],
+
+    "nativeCurrency": {
+      "$comment": "Arc uses USDC as native gas. 6 decimals, not 18 — this is unusual and easy to get wrong.",
+      "name": "USD Coin",
+      "symbol": "USDC",
+      "decimals": 6
+    },
+
+    "explorerCandidates": ["https://arcscan.app", "https://explorer.arc.network"]
+  },
+
+  "cctp": {
+    "irisApiBase": "https://iris-api.circle.com",
+    "$comment": "Sandbox/testnet uses https://iris-api-sandbox.circle.com",
+    "attestationPollIntervalMs": 1000,
+    "attestationTimeoutMs": 300000,
+    "preferForwarding": true,
+    "$comment2": [
+      "Forwarding (depositForBurnWithHook) lets Circle relay and pay destination gas.",
+      "This matters enormously on Arc: USDC IS the gas token, so a fresh wallet has",
+      "zero gas until the mint lands. The direct path would strand funds."
+    ]
+  },
+
+  "detection": {
+    "pollIntervalMs": 15000,
+    "maxPollIntervalMs": 120000,
+    "backoffFactor": 1.5,
+    "requiredConsecutiveConfirmations": 2,
+    "blockAdvanceTimeoutMs": 30000
+  }
+}

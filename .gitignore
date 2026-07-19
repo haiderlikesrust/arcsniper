@@ -1,0 +1,18 @@
+node_modules/
+dist/
+*.log
+logs/
+
+# NEVER commit key material.
+.env
+*.keystore.json
+keystore/
+secrets/
+
+# In-flight bridge records. Not secret, but machine-local and never shared.
+state/
+
+# CUSTODIAL DATA. Contains every user's encrypted keystore and the audit log.
+# Losing this loses everyone's funds. Committing it exposes them.
+data/
+config/telegram.json

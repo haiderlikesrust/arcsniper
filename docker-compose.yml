@@ -1,0 +1,52 @@
+# Custodial Arc bot - VPS deployment.
+#
+# The container holds encrypted user wallets in the `arcbot-data` volume. Guard
+# that volume like cash: it IS everyone's funds (encrypted, but still).
+#
+# Two ways to provide the master passphrase (pick ONE - see TELEGRAM.md):
+#   A) Interactive, never on disk:   docker compose run --rm bot
+#      (you type the passphrase; no auto-restart, most secure)
+#   B) Unattended restart:           set ARCBOT_MASTER_PASSPHRASE in .env and
+#      use `docker compose up -d`. The passphrase then lives in .env on the host
+#      - encryption protects a STOLEN VOLUME at rest, not a live-host breach.
+
+services:
+  bot:
+    build: .
+    image: arcsniper:latest
+    # 'no' + run interactively for posture A; switch to on-failure for posture B.
+    restart: "no"
+    init: true
+    stop_grace_period: 30s
+
+    env_file:
+      - .env
+
+    # Config is mounted READ-ONLY - the running container cannot alter its own
+    # allowlist or caps.
+    volumes:
+      - ./config/networks.json:/app/config/networks.json:ro
+      - ./config/telegram.json:/app/config/telegram.json:ro
+      - arcbot-data:/app/data
+
+    # Hardening: the app only needs to write to /app/data (a volume) and /tmp.
+    read_only: true
+    tmpfs:
+      - /tmp
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+
+    # Keep decrypted keys out of swap.
+    mem_limit: 1g
+    memswap_limit: 1g
+
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
+
+volumes:
+  arcbot-data:
