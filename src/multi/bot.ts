@@ -72,8 +72,8 @@ export function createBot(token: string, deps: BotDeps): Bot {
     // PANIC IS NEVER THROTTLED. A hijacker holding the session could otherwise
     // spam buttons to exhaust the bucket and starve the real owner out of their
     // own kill switch - the exact window panic exists to close.
-    const rawText = ctx.msg?.text ?? ''
-    const isPanic = /^\/panic\b/.test(rawText) || ctx.callbackQuery?.data === 'nav:panic'
+    // Only the typed command - there is no panic button to press.
+    const isPanic = /^\/panic\b/.test(ctx.message?.text ?? '')
     if (!isPanic) {
       const limiter = ctx.callbackQuery?.data?.startsWith('nav:') ? navLimit : actionLimit
       if (!limiter.check(id)) {
@@ -149,15 +149,22 @@ export function createBot(token: string, deps: BotDeps): Bot {
     }
   }
 
-  function rootKeyboard(user: StoredUser): InlineKeyboard {
+  /**
+   * No panic button here, deliberately.
+   *
+   * A freeze is trivially triggered by a mis-tap when it sits next to ordinary
+   * navigation, and unfreezing needs the operator - so an accidental press
+   * locks a user out until someone intervenes. /panic as a typed command is
+   * only marginally slower in a real emergency and essentially impossible to
+   * hit by accident.
+   */
+  function rootKeyboard(_user: StoredUser): InlineKeyboard {
     return new InlineKeyboard()
       .text('Wallets', 'nav:wallets')
       .text('Settings', 'nav:settings')
       .row()
       .text('Target', 'nav:target')
       .text('Refresh', 'nav:root')
-      .row()
-      .text(user.frozen ? 'FROZEN' : 'PANIC (freeze)', 'nav:panic')
   }
 
   async function rootText(user: StoredUser): Promise<string> {
@@ -175,7 +182,9 @@ export function createBot(token: string, deps: BotDeps): Bot {
       `Spend ${user.spendUsdc} / Bridge ${user.bridgeUsdc} USDC  |  Slippage ${user.maxSlippageBps}bps\n` +
       `Target: ${user.tokenAddress ? `\`${short(user.tokenAddress)}\`` : '_none_'}  ` +
       `${user.armed ? '*ARMED*' : 'not armed'}` +
-      (user.frozen ? '\n\n*ACCOUNT FROZEN* - ask the operator to unfreeze.' : '')
+      (user.frozen
+        ? '\n\n*ACCOUNT FROZEN* - ask the operator to unfreeze.'
+        : '\n\n_Emergency: send_ `/panic` _to freeze everything._')
     )
   }
 
@@ -289,8 +298,11 @@ export function createBot(token: string, deps: BotDeps): Bot {
   bot.command('help', async (ctx) => {
     await ctx.reply(
       '*arcsniper*\n\n' +
-        'Use /menu for the buttons. Everything is in there.\n\n' +
-        '/panic - freeze immediately (always works, never rate-limited)\n\n' +
+        '/menu - wallets, settings, target. Everything is in there.\n' +
+        '/panic - freeze everything immediately\n\n' +
+        '_/panic is a command rather than a button so it cannot be hit by ' +
+        'accident. It always works: never rate-limited, and it beats any prompt ' +
+        'you have open. Only the operator can unfreeze you afterwards._\n\n' +
         '_Never send anyone your private key or seed phrase - including this bot._',
       { parse_mode: 'Markdown' },
     )
@@ -338,9 +350,8 @@ export function createBot(token: string, deps: BotDeps): Bot {
           const v = targetView(user)
           return void (await render(ctx, v.text, v.kb))
         }
-        case 'panic':
-          await doPanic(ctx, user)
-          return void (await renderRoot(ctx, registry.get(ctx.from.id)!))
+        // No 'panic' route: freezing is command-only (/panic), so it cannot be
+        // triggered by a mis-tap. See rootKeyboard.
         case 'disarm':
           registry.update(user.telegramId, { armed: false })
           audit('target.disarmed', user.telegramId, {})

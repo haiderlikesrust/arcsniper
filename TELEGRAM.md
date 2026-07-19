@@ -94,7 +94,9 @@ The bot is button-driven. There are only three commands:
 
 - `/start` — creates a wallet and opens the menu
 - `/menu` — reopen the menu
-- `/panic` — freeze immediately (works even if the UI is stuck, and is never rate-limited)
+- `/panic` — freeze everything immediately
+
+**`/panic` is deliberately a command, not a button.** A freeze that can be hit by a stray thumb locks you out until the operator unfreezes you — the wrong failure mode for something that sits next to ordinary navigation. As a typed command it's barely slower in a real emergency and essentially impossible to trigger by accident. It's never rate-limited, and it takes precedence over any open prompt.
 
 Everything else is buttons:
 

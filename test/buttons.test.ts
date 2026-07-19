@@ -246,6 +246,28 @@ describe('handler ordering', () => {
   })
 })
 
+describe('panic is command-only', () => {
+  const src = readFileSync(new URL('../src/multi/bot.ts', import.meta.url), 'utf8')
+
+  test('no panic button exists in any keyboard', () => {
+    // A freeze reachable by a mis-tap locks the user out until the operator
+    // intervenes. It must not sit next to ordinary navigation.
+    assert.ok(!src.includes("'nav:panic'"), 'there must be no nav:panic callback route')
+    assert.ok(!/\.text\([^)]*PANIC/i.test(src), 'no keyboard button may say PANIC')
+  })
+
+  test('the /panic command still exists and bypasses the rate limiter', () => {
+    assert.match(src, /bot\.command\('panic'/, '/panic command must remain')
+    assert.match(src, /isPanic = \/\^\\\/panic/, 'panic must still be detected before throttling')
+    assert.match(src, /if \(!isPanic\)/, 'the rate limiter must be skipped for panic')
+  })
+
+  test('the menu tells users how to panic', () => {
+    // Removing the button only helps if the command is discoverable.
+    assert.match(src, /Emergency: send.*\/panic/, 'root menu must mention /panic')
+  })
+})
+
 describe('wallet export', () => {
   test('exports a key that re-derives the same address', async () => {
     // The whole point of export: the key you get back must actually control
