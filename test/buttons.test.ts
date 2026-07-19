@@ -246,6 +246,29 @@ describe('handler ordering', () => {
   })
 })
 
+describe('bridge/spend gas reserve', () => {
+  const src = readFileSync(new URL('../src/multi/bot.ts', import.meta.url), 'utf8')
+
+  test('requires a real reserve, not merely bridge > spend', () => {
+    // A 0.01 gap passed the old "bridge > spend" rule but may not cover an
+    // approve plus a swap - and that failure would land mid-launch.
+    assert.match(src, /MIN_GAS_RESERVE_USDC = 1_000_000n/, 'reserve should be 1.00 USDC in base units')
+    assert.match(src, /reserve < MIN_GAS_RESERVE_USDC/, 'the check must use the reserve, not a bare comparison')
+  })
+
+  test('does not describe the leftover as a fee', () => {
+    // "80.0 left for gas" read as though all 80 got consumed. It is unspent.
+    assert.ok(!src.includes('left for gas on Arc'), 'the misleading phrasing must be gone')
+    assert.match(src, /stays in your wallet unspent/, 'leftover must be described as unspent')
+  })
+
+  test('the settings screen separates bridged / spent / unspent', () => {
+    assert.match(src, /_\(moved to Arc\)_/)
+    assert.match(src, /_\(buys the token\)_/)
+    assert.match(src, /_\(stays in your wallet\)_/)
+  })
+})
+
 describe('markdown escaping', () => {
   // A token symbol or error message containing _ * ` [ made rootText
   // unparseable. editMessageText 400s, the retry re-sends the same broken text,

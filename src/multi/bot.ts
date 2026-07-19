@@ -28,6 +28,16 @@ import { StatusBoard, phaseLabel, phaseProgress, ago, escapeMd } from './status.
 
 const MAX_USER_SLIPPAGE_BPS = 2000
 
+/**
+ * Minimum USDC that must remain after the buy, in base units (1.00 USDC).
+ *
+ * On Arc, USDC IS the gas token, so the swap pays for itself out of the bridged
+ * balance. Real cost is a fraction of a cent; 1 USDC is generous headroom for an
+ * approve plus a swap on a busy launch block. Requiring only "bridge > spend"
+ * let a 0.01 gap through, which could strand the buy at the worst moment.
+ */
+const MIN_GAS_RESERVE_USDC = 1_000_000n
+
 export interface BotDeps {
   cfg: TelegramConfig
   registry: UserRegistry
@@ -277,13 +287,21 @@ export function createBot(token: string, deps: BotDeps): Bot {
       .text('Slippage', 'nav:set_slippage')
       .row()
       .text('Back', 'nav:root')
+    const spend = parseUnits(user.spendUsdc, USDC_DECIMALS)
+    const bridge = parseUnits(user.bridgeUsdc, USDC_DECIMALS)
+    const leftover = bridge > spend ? bridge - spend : 0n
+
     const text =
       `*Settings*\n\n` +
-      `Spend: *${user.spendUsdc}* USDC (max ${user.caps.maxSpendUsdc})\n` +
-      `Bridge: *${user.bridgeUsdc}* USDC (max ${user.caps.maxBridgeUsdc})\n` +
-      `Slippage: *${user.maxSlippageBps}* bps (max ${MAX_USER_SLIPPAGE_BPS})\n\n` +
-      `_Bridge must exceed spend - on Arc, USDC is the gas token, so the ` +
-      `difference pays for the swap itself._`
+      `Bridge: *${user.bridgeUsdc}* USDC  _(moved to Arc)_\n` +
+      `Spend: *${user.spendUsdc}* USDC  _(buys the token)_\n` +
+      `Unspent: *${formatUsdc(leftover)}* USDC  _(stays in your wallet)_\n\n` +
+      `Slippage: *${user.maxSlippageBps}* bps (max ${MAX_USER_SLIPPAGE_BPS})\n` +
+      `Caps: spend <= ${user.caps.maxSpendUsdc}, bridge <= ${user.caps.maxBridgeUsdc}\n\n` +
+      `_Bridge must exceed spend by at least ${formatUsdc(MIN_GAS_RESERVE_USDC)} USDC. ` +
+      `On Arc, USDC is the gas token, so some must stay behind to pay for the swap - ` +
+      `but the actual fee is a fraction of a cent, so anything above that is simply ` +
+      `unspent, not consumed._`
     return { text, kb }
   }
 
@@ -856,20 +874,38 @@ export function createBot(token: string, deps: BotDeps): Bot {
 
       const nextSpend = field === 'spend' ? amount : parseUnits(user.spendUsdc, USDC_DECIMALS)
       const nextBridge = field === 'bridge' ? amount : parseUnits(user.bridgeUsdc, USDC_DECIMALS)
-      if (nextBridge <= nextSpend) {
+      const reserve = nextBridge - nextSpend
+
+      // Require a real gas reserve, not merely "bridge > spend". A 0.01 gap
+      // technically passed the old check but may not cover an approve plus a
+      // swap, and the failure would land mid-launch.
+      if (reserve < MIN_GAS_RESERVE_USDC) {
         await ctx.reply(
-          `Refused: bridge (${formatUsdc(nextBridge)}) must be higher than spend (${formatUsdc(nextSpend)}).\n\n` +
-            'On Arc, USDC is the gas token - the difference pays for the swap itself.',
+          `Refused: bridge (${formatUsdc(nextBridge)}) must exceed spend (${formatUsdc(nextSpend)}) ` +
+            `by at least ${formatUsdc(MIN_GAS_RESERVE_USDC)} USDC.\n\n` +
+            'On Arc, USDC is the gas token, so a little must stay behind to pay for the swap itself.',
         )
         return
       }
 
       registry.update(id, field === 'spend' ? { spendUsdc: formatUsdc(amount) } : { bridgeUsdc: formatUsdc(amount) })
       audit('settings.changed', id, { field, value: formatUsdc(amount) })
+
+      // Be explicit that the remainder is UNSPENT, not a fee. Calling it
+      // "left for gas" reads as though the whole remainder gets consumed -
+      // actual gas on Arc is a fraction of a cent.
+      const leftover = formatUsdc(reserve)
+      const wastefulGap = reserve > MIN_GAS_RESERVE_USDC * 5n
       await ctx.reply(
         `${field} set to ${formatUsdc(amount)} USDC.\n\n` +
-          `Bridge ${formatUsdc(nextBridge)} -> spend ${formatUsdc(nextSpend)} ` +
-          `(${formatUsdc(nextBridge - nextSpend)} left for gas on Arc).`,
+          `Bridging *${formatUsdc(nextBridge)}* -> buying with *${formatUsdc(nextSpend)}*.\n` +
+          `${leftover} USDC stays in your wallet unspent.\n\n` +
+          (wastefulGap
+            ? `_Gas on Arc costs a fraction of a cent, so you only need about ` +
+              `${formatUsdc(MIN_GAS_RESERVE_USDC)} spare. To buy with more of it, ` +
+              `raise your spend._`
+            : `_That covers gas comfortably._`),
+        { parse_mode: 'Markdown' },
       )
     } catch (err) {
       log.error({ err: (err as Error).message }, 'pending-input handler error')
