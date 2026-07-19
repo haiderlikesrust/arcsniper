@@ -46,8 +46,6 @@ Survives reboots, but the passphrase now lives in `.env` on the host. Encryption
 
 ```bash
 docker compose build
-docker compose run --rm --service-ports bot     # posture A
-# or: docker compose up -d                        # posture B
 ```
 
 First run: leave `--live` off to smoke-test. The image's default command is `telegram --live`; for a dry run override it:
@@ -55,6 +53,39 @@ First run: leave `--live` off to smoke-test. The image's default command is `tel
 ```bash
 docker compose run --rm bot node dist/index.js telegram
 ```
+
+### Keeping it running after you close SSH
+
+`docker compose run` attaches to your terminal, so closing SSH kills it. Pick the posture you chose in step 2:
+
+**Posture A — tmux (passphrase never on disk):**
+
+```bash
+tmux new -s arcbot
+docker compose run --rm bot
+# type the passphrase, then detach: Ctrl-B, then D
+```
+
+Close SSH freely; the bot keeps running. To come back:
+
+```bash
+tmux attach -t arcbot
+```
+
+Survives SSH disconnect. Does **not** survive a VPS reboot — you reattach and re-enter the passphrase. That's the price of keeping the passphrase out of a file.
+
+**Posture B — fully unattended:**
+
+Put `ARCBOT_MASTER_PASSPHRASE` in `.env` (`chmod 600 .env`), then:
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.unattended.yml up -d
+docker compose logs -f bot     # watch it
+```
+
+Survives SSH disconnect *and* reboots. The passphrase now lives on the host, so encryption protects a stolen volume at rest — not a live-host compromise.
+
+If you try `up -d` without setting the passphrase, the bot refuses to start and tells you both options rather than hanging.
 
 ## 4. Operator wallet commands (import / export / claim)
 

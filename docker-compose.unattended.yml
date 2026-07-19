@@ -1,0 +1,25 @@
+# Unattended mode (posture B) - survives SSH disconnect AND VPS reboot.
+#
+# Use with:
+#   docker compose -f docker-compose.yml -f docker-compose.unattended.yml up -d
+#
+# REQUIRES ARCBOT_MASTER_PASSPHRASE in .env. That is the whole tradeoff: the
+# passphrase now lives on the host, so encryption protects a STOLEN VOLUME at
+# rest, not a live-host compromise. Anyone with root on this box (or the ability
+# to run `docker inspect`) can read it.
+#
+# If you would rather the passphrase never touched disk, don't use this file -
+# run `docker compose run --rm bot` inside tmux instead. That survives SSH
+# closing but not a reboot, and you re-enter the passphrase after one.
+#
+# Lock the env file down either way:
+#   chmod 600 .env
+
+services:
+  bot:
+    # Restart on crash and on boot, but not if you deliberately stopped it.
+    restart: unless-stopped
+    # Nothing to attach to; logs go to the json-file driver configured in the
+    # base compose file (view with: docker compose logs -f bot).
+    stdin_open: false
+    tty: false

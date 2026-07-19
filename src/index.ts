@@ -250,6 +250,24 @@ async function cmdTelegram(argv: string[]): Promise<void> {
   console.log('    ARCBOT_MASTER_PASSPHRASE / .env, securing that file is on you.')
   console.log('  - You are custodian of other people\'s money. Keep per-user caps low.\n')
 
+  // Prompting only works with a terminal attached. Detached (`docker compose
+  // up -d`, systemd, nohup) there is nobody to type it, and without this guard
+  // the prompt reads EOF and fails with something cryptic. Say what to do.
+  if (!process.env.ARCBOT_MASTER_PASSPHRASE && process.stdin.isTTY !== true) {
+    throw new Error(
+      'No terminal attached and ARCBOT_MASTER_PASSPHRASE is not set, so there is no way to ' +
+        'unlock the wallets.\n\n' +
+        'Pick one:\n' +
+        '  A) Keep the passphrase off disk - run it inside tmux so it survives SSH closing:\n' +
+        '       tmux new -s arcbot\n' +
+        '       docker compose run --rm bot\n' +
+        '       (detach with Ctrl-B then D; reattach with: tmux attach -t arcbot)\n\n' +
+        '  B) Run unattended - put ARCBOT_MASTER_PASSPHRASE in .env, then:\n' +
+        '       docker compose -f docker-compose.yml -f docker-compose.unattended.yml up -d\n' +
+        '     This survives reboots, but the passphrase then lives on the host.',
+    )
+  }
+
   const masterPassphrase =
     process.env.ARCBOT_MASTER_PASSPHRASE ?? (await promptSecret('Master passphrase: '))
   closePrompts()
