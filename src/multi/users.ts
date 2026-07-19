@@ -88,7 +88,21 @@ export class UserRegistry {
    * @param masterPassphrase Unlocks every user keystore. Typed by the operator
    *   at startup and held only in memory.
    */
-  constructor(private readonly masterPassphrase: string) {
+  /**
+   * Ceilings applied to newly created/imported wallets. Comes from
+   * config/telegram.json `defaultCaps`. Existing users keep the caps stored on
+   * their record, so raising the default does not retroactively raise theirs.
+   */
+  private readonly defaultCaps: { maxSpendUsdc: string; maxBridgeUsdc: string }
+
+  constructor(
+    private readonly masterPassphrase: string,
+    defaultCaps: { maxSpendUsdc: string; maxBridgeUsdc: string } = {
+      maxSpendUsdc: '250.00',
+      maxBridgeUsdc: '250.00',
+    },
+  ) {
+    this.defaultCaps = defaultCaps
     mkdirSync(USERS_DIR, { recursive: true })
     this.loadAll()
   }
@@ -198,7 +212,7 @@ export class UserRegistry {
       maxSlippageBps: 300,
       tokenAddress: null,
       armed: false,
-      caps: { maxSpendUsdc: '250.00', maxBridgeUsdc: '250.00' },
+      caps: { ...this.defaultCaps },
       frozen: false,
       createdAt: new Date().toISOString(),
     }
@@ -256,7 +270,7 @@ export class UserRegistry {
           maxSlippageBps: 300,
           tokenAddress: null,
           armed: false,
-          caps: { maxSpendUsdc: '250.00', maxBridgeUsdc: '250.00' },
+          caps: { ...this.defaultCaps },
           frozen: false,
           createdAt: new Date().toISOString(),
         }

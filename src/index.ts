@@ -256,7 +256,7 @@ async function cmdTelegram(argv: string[]): Promise<void> {
 
   const { MultiOrchestrator } = await import('./multi/multiOrchestrator.js')
 
-  const registry = new UserRegistry(masterPassphrase)
+  const registry = new UserRegistry(masterPassphrase, cfg.defaultCaps)
 
   // The bot needs a way to message users; the orchestrator needs the bot's
   // sendMessage. Build the bot first, then the orchestrator wired to it.
@@ -323,7 +323,8 @@ async function loadRegistryForOperator() {
     process.env.ARCBOT_MASTER_PASSPHRASE ?? (await promptSecret('Master passphrase: '))
   closePrompts()
   if (masterPassphrase.length < 12) throw new Error('master passphrase must be at least 12 characters')
-  return new UserRegistry(masterPassphrase)
+  const { loadTelegramConfig } = await import('./multi/auth.js')
+  return new UserRegistry(masterPassphrase, loadTelegramConfig().defaultCaps)
 }
 
 async function cmdImport(argv: string[]): Promise<void> {

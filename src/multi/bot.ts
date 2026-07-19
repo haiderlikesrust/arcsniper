@@ -315,23 +315,34 @@ export function createBot(token: string, deps: BotDeps): Bot {
           return
         }
 
+        // On Arc, USDC IS the gas token, so the bridged amount must exceed the
+        // spend or the buy has nothing left to pay for itself. Validate the
+        // resulting pair BEFORE persisting - a warning is not enough, because a
+        // user who ignores it gets a guaranteed failed buy at launch.
+        const nextSpend = field === 'spend' ? amount : parseUnits(user.spendUsdc, USDC_DECIMALS)
+        const nextBridge = field === 'bridge' ? amount : parseUnits(user.bridgeUsdc, USDC_DECIMALS)
+        if (nextBridge <= nextSpend) {
+          await ctx.reply(
+            `Refused: bridge (${formatUsdc(nextBridge)}) must be HIGHER than spend (${formatUsdc(nextSpend)}).\n\n` +
+              'On Arc, USDC is the gas token - the difference pays for the swap itself. ' +
+              `Leave at least a few USDC of headroom, e.g. \`/set bridge ${formatUsdc(nextSpend + 5_000_000n)}\`.`,
+            { parse_mode: 'Markdown' },
+          )
+          return
+        }
+
         const next =
           field === 'spend'
             ? { spendUsdc: formatUsdc(amount) }
             : { bridgeUsdc: formatUsdc(amount) }
-        const updated = registry.update(user.telegramId, next)
-
-        // On Arc, USDC is the gas token - bridging exactly what you spend
-        // leaves nothing to pay for the swap.
-        const spend = parseUnits(updated.spendUsdc, USDC_DECIMALS)
-        const bridge = parseUnits(updated.bridgeUsdc, USDC_DECIMALS)
-        const warn =
-          bridge <= spend
-            ? '\n\nWarning: bridge amount must be HIGHER than spend - the extra pays gas on Arc. Raise it with /set bridge.'
-            : ''
+        registry.update(user.telegramId, next)
 
         audit('settings.changed', user.telegramId, { field, value: rawValue })
-        await ctx.reply(`${field} set to ${rawValue} USDC.${warn}`)
+        await ctx.reply(
+          `${field} set to ${rawValue} USDC.\n\n` +
+            `Now: bridge ${formatUsdc(nextBridge)} -> spend ${formatUsdc(nextSpend)} ` +
+            `(${formatUsdc(nextBridge - nextSpend)} left for gas on Arc).`,
+        )
         return
       }
 

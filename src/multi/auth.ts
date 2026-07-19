@@ -52,6 +52,22 @@ export function loadTelegramConfig(path = TELEGRAM_CONFIG_PATH): TelegramConfig 
         `Add your numeric Telegram ID (get it from @userinfobot).`,
     )
   }
+
+  // maxBridge must exceed maxSpend, or a user who maxes out both can never
+  // fund the swap's own gas on Arc (where USDC IS the gas token). Catch the
+  // misconfiguration at startup rather than at launch.
+  const spendCap = Number(parsed.data.defaultCaps.maxSpendUsdc)
+  const bridgeCap = Number(parsed.data.defaultCaps.maxBridgeUsdc)
+  if (!Number.isFinite(spendCap) || !Number.isFinite(bridgeCap)) {
+    throw new Error(`${path}: defaultCaps values must be decimal strings like "100.00"`)
+  }
+  if (bridgeCap <= spendCap) {
+    throw new Error(
+      `${path}: defaultCaps.maxBridgeUsdc (${bridgeCap}) must be GREATER than maxSpendUsdc (${spendCap}). ` +
+        `On Arc, USDC is the gas token - the difference pays for the swap. Leave headroom, e.g. spend 500 / bridge 510.`,
+    )
+  }
+
   return parsed.data
 }
 
