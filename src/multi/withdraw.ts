@@ -1,9 +1,9 @@
-import { createWalletClient, http, type Address, type Chain, type Hash, type PublicClient } from 'viem'
+import { createWalletClient, getAddress, http, type Address, type Chain, type Hash, type PublicClient } from 'viem'
 import { erc20Abi } from '../abi.js'
 import { formatUsdc } from '../config.js'
 import { log } from '../log.js'
 import { audit } from './audit.js'
-import type { UserRegistry } from './users.js'
+import { activeWallet, type UserRegistry } from './users.js'
 
 /**
  * The only path by which funds leave a custodial wallet.
@@ -30,6 +30,19 @@ export async function withdrawAll(
   rpcUrl: string,
   usdc: Address,
   dryRun: boolean,
+  /** Which wallet to withdraw from. Defaults to the user's active wallet. */
+  walletId?: string,
+  /**
+   * The destination the CALLER showed the user. If given and it no longer
+   * matches the registered address, the withdrawal is refused.
+   *
+   * This closes a real gap: the withdrawal-address time-lock settles lazily
+   * (inside this function), so a hijacker's change that matures between the UI
+   * rendering "send to 0xOLD" and the user pressing confirm would otherwise pay
+   * 0xNEW silently. Asserting the destination at the signing boundary makes
+   * "what you saw is what you sign" enforceable rather than aspirational.
+   */
+  expectedDestination?: Address,
 ): Promise<WithdrawResult> {
   // Apply any pending address change whose lock has expired, so a legitimate
   // change made a day ago takes effect now.
@@ -53,11 +66,28 @@ export async function withdrawAll(
 
   const destination = user.withdrawalAddress
 
+  // "What you saw is what you sign." If the caller told us which destination it
+  // displayed and the settled address differs, refuse - do not silently pay a
+  // different address than the user approved.
+  if (expectedDestination && getAddress(expectedDestination) !== getAddress(destination)) {
+    throw new Error(
+      `withdrawal destination changed since you were shown it ` +
+        `(you saw ${expectedDestination}, it is now ${destination}). ` +
+        `Refused. If you did not request an address change, someone has access to your Telegram - ` +
+        `cancel it and secure your account.`,
+    )
+  }
+
+  // Resolve the wallet to drain BEFORE reading balances, so the balance we
+  // check and the key we sign with are guaranteed to be the same wallet.
+  const sourceWallet = walletId ? user.wallets.find((w) => w.id === walletId) : activeWallet(user)
+  if (!sourceWallet) throw new Error('no such wallet')
+
   const balance = (await publicClient.readContract({
     address: usdc,
     abi: erc20Abi,
     functionName: 'balanceOf',
-    args: [user.address],
+    args: [sourceWallet.address],
   })) as bigint
 
   if (balance === 0n) {
@@ -74,7 +104,7 @@ export async function withdrawAll(
     return { txHash: null, amount: balance, destination, dryRun: true }
   }
 
-  const account = await registry.unlock(telegramId)
+  const account = await registry.unlock(telegramId, sourceWallet.id)
   const wallet = createWalletClient({ account, chain, transport: http(rpcUrl) })
 
   const { request } = await publicClient.simulateContract({

@@ -211,7 +211,8 @@ describe('withdrawal address time lock', () => {
       assert.equal(attempted.withdrawalAddress, A, 'withdrawalAddress must be immutable via update()')
       assert.equal(attempted.pendingWithdrawalAddress, null, 'pending fields must be immutable via update()')
       assert.equal(attempted.caps.maxSpendUsdc, '250.00', 'caps must be immutable via update()')
-      assert.equal(attempted.address, created.address, 'address must be immutable via update()')
+      assert.equal(attempted.wallets[0]!.address, created.wallets[0]!.address, 'wallet address must be immutable via update()')
+      assert.equal(attempted.frozen, false, 'frozen must NOT be settable via update() - self-unfreeze guard')
       assert.equal(attempted.spendUsdc, '30.00', 'whitelisted fields still update')
     } finally {
       process.chdir(cwd)
@@ -227,7 +228,7 @@ describe('withdrawal address time lock', () => {
 
       const PK = '0x59c6995e998f97a5a0044966f0945389dc9e86dae88c7a8412f4603b6b78690d'
       const r = await importWallet(reg, { telegramId: 100, privateKey: PK })
-      assert.equal(reg.get(100)!.address, r.address)
+      assert.equal(reg.get(100)!.wallets[0]!.address, r.address)
       // Imported wallet starts with no withdrawal address (must be set fresh).
       assert.equal(reg.get(100)!.withdrawalAddress, null)
 
@@ -238,26 +239,44 @@ describe('withdrawal address time lock', () => {
     }
   })
 
-  test('import refuses to overwrite a funded wallet', async () => {
+  test('import ADDS a wallet - it never replaces or orphans an existing one', async () => {
     const cwd = process.cwd()
     try {
       const { UserRegistry } = await loadRegistry()
       const { importWallet } = await import('../src/multi/importExport.ts?' + Math.random())
       const reg = new UserRegistry('test-master-passphrase')
-      await reg.create(300, 'tester')
+      const created = await reg.create(300, 'tester')
+      const originalAddress = created.wallets[0]!.address
+
+      // A withdrawal address set BEFORE the import must survive it - otherwise
+      // importing would be a way to reset the 24h time-lock protection.
+      reg.requestWithdrawalAddress(300, A as `0x${string}`)
 
       const PK = '0x59c6995e998f97a5a0044966f0945389dc9e86dae88c7a8412f4603b6b78690d'
-      // Balance guard reports funds on the old wallet -> refuse even with overwrite.
-      await assert.rejects(
-        () =>
-          importWallet(reg, {
-            telegramId: 300,
-            privateKey: PK,
-            overwrite: true,
-            balanceOf: async () => ({ usdc: 1_000_000n, native: 0n }),
-          }),
-        /still holds funds/,
+      const r = await importWallet(reg, { telegramId: 300, privateKey: PK, label: 'Funded' })
+
+      const after = reg.get(300)!
+      assert.equal(after.wallets.length, 2, 'import must ADD, not replace')
+      assert.ok(
+        after.wallets.some((w) => w.address === originalAddress),
+        'the pre-existing keystore must still be present - dropping it would orphan funds',
       )
+      assert.equal(after.activeWalletId, r.walletId, 'imported wallet becomes active')
+      assert.equal(after.withdrawalAddress, A, 'import must NOT reset the withdrawal address')
+    } finally {
+      process.chdir(cwd)
+    }
+  })
+
+  test('the same wallet cannot be imported twice for one user', async () => {
+    const cwd = process.cwd()
+    try {
+      const { UserRegistry } = await loadRegistry()
+      const { importWallet } = await import('../src/multi/importExport.ts?' + Math.random())
+      const reg = new UserRegistry('test-master-passphrase')
+      const PK = '0x59c6995e998f97a5a0044966f0945389dc9e86dae88c7a8412f4603b6b78690d'
+      await importWallet(reg, { telegramId: 400, privateKey: PK })
+      await assert.rejects(() => importWallet(reg, { telegramId: 400, privateKey: PK }), /already have this wallet/)
     } finally {
       process.chdir(cwd)
     }
@@ -271,11 +290,11 @@ describe('withdrawal address time lock', () => {
       const u1 = await reg.create(1, 'a')
       const u2 = await reg.create(2, 'b')
 
-      assert.notEqual(u1.address, u2.address, 'each user must get a distinct wallet')
+      assert.notEqual(u1.wallets[0]!.address, u2.wallets[0]!.address, 'each user must get a distinct wallet')
       // The stored record must never carry a plaintext key.
       const serialized = JSON.stringify(u1)
       assert.ok(!/"privateKey"/.test(serialized), 'no privateKey field may be stored')
-      assert.ok(u1.keystore.crypto.ciphertext.length > 0, 'key must be stored encrypted')
+      assert.ok(u1.wallets[0]!.keystore.crypto.ciphertext.length > 0, 'key must be stored encrypted')
     } finally {
       process.chdir(cwd)
     }

@@ -335,10 +335,12 @@ async function cmdImport(argv: string[]): Promise<void> {
   const idStr = flagValue(argv, '--telegram-id')
   const keyFile = flagValue(argv, '--key-file')
   const username = flagValue(argv, '--username') ?? null
-  const overwrite = hasFlag(argv, '--overwrite')
+  const label = flagValue(argv, '--label') ?? 'Imported'
 
   if (!idStr || !Number.isInteger(Number(idStr))) {
-    throw new Error('usage: arcbot import --telegram-id <id> --key-file <path> [--username <name>] [--overwrite]')
+    throw new Error(
+      'usage: arcbot import --telegram-id <id> --key-file <path> [--label "My wallet"] [--username <name>]',
+    )
   }
   const telegramId = Number(idStr)
 
@@ -346,7 +348,9 @@ async function cmdImport(argv: string[]): Promise<void> {
     '\nOPERATOR WALLET IMPORT (never do this through Telegram).\n' +
       'The key is read locally, encrypted with the master passphrase, and the\n' +
       'source file is shredded. Put the key file on a tmpfs / RAM path if you can\n' +
-      '(e.g. /dev/shm), so it never touches persistent disk.\n',
+      '(e.g. /dev/shm), so it never touches persistent disk.\n\n' +
+      'This ADDS a wallet - it never replaces an existing one, so nothing can be\n' +
+      'orphaned. The user picks which wallet is active from the Wallets menu.\n',
   )
 
   let privateKey: string
@@ -359,64 +363,12 @@ async function cmdImport(argv: string[]): Promise<void> {
   }
 
   const registry = await loadRegistryForOperator()
+  const result = await importWallet(registry, { telegramId, privateKey, username, label, makeActive: true })
 
-  // Balance guard for the overwrite case. Check BOTH the source chain (Base)
-  // and, if Arc is live, the destination chain - a wallet may hold bridged USDC
-  // or a bought balance on Arc. (Arbitrary bought tokens still can't be
-  // enumerated; importWallet warns about that.)
-  const networks = loadNetworks()
-  const balanceOf = async (address: `0x${string}`) => {
-    const client = makeSourceClient(networks)
-    let usdc = 0n
-    let native = 0n
-    try {
-      const [u, n] = await Promise.all([
-        client.readContract({ address: networks.source.usdc, abi: erc20Abi, functionName: 'balanceOf', args: [address] }) as Promise<bigint>,
-        client.getBalance({ address }),
-      ])
-      usdc += u
-      native += n
-    } catch (err) {
-      // If we cannot read the source balance, fail closed by reporting funds
-      // present, so the overwrite guard refuses rather than risking an orphan.
-      log.warn({ err: (err as Error).message }, 'source balance check failed - treating wallet as non-empty')
-      return { usdc: 1n, native: 1n }
-    }
-    // Best-effort destination (Arc) check.
-    const arcRpc = (await probeAll(networks.destination.rpcCandidates)).find((r) => r.ok)?.url
-    if (arcRpc) {
-      try {
-        const probe = await probeEndpoint(arcRpc, 10_000)
-        if (probe.ok) {
-          const arc = makeClient(
-            defineArcChain({
-              chainId: probe.chainId,
-              rpcUrls: [arcRpc],
-              nativeCurrency: networks.destination.nativeCurrency,
-            }),
-            [arcRpc],
-          )
-          native += await arc.getBalance({ address }) // USDC is native gas on Arc
-          if (networks.destination.usdc) {
-            usdc += (await arc.readContract({
-              address: networks.destination.usdc,
-              abi: erc20Abi,
-              functionName: 'balanceOf',
-              args: [address],
-            })) as bigint
-          }
-        }
-      } catch {
-        // Arc not reachable / not live yet - source check stands.
-      }
-    }
-    return { usdc, native }
-  }
-
-  const result = await importWallet(registry, { telegramId, privateKey, username, overwrite, balanceOf })
-  console.log(`\nImported wallet ${result.address} for user ${telegramId}.`)
-  if (result.replaced) console.log(`Replaced previous wallet ${result.replaced}.`)
-  console.log('The user must run /setwithdraw before they can withdraw (time-locked, since the wallet holds funds).\n')
+  console.log(`\nImported ${result.address} as "${label}" for user ${telegramId}.`)
+  console.log('It is now their ACTIVE wallet (the one that trades).')
+  console.log('\nIf they have not set a withdrawal address yet, they must do so before')
+  console.log('withdrawing - it is time-locked 24h because the wallet already holds funds.\n')
 }
 
 async function cmdExport(argv: string[]): Promise<void> {

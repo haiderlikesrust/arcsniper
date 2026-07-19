@@ -30,77 +30,67 @@ export interface ImportOptions {
   telegramId: number
   privateKey: string
   username?: string | null
-  overwrite?: boolean
-  /** On-chain balance lookup for the overwrite guard. Injected by the caller. */
-  balanceOf?: (address: Address) => Promise<{ usdc: bigint; native: bigint }>
+  /** Friendly name shown in the wallet list. */
+  label?: string
+  /** Make this the wallet used for trading. Default true. */
+  makeActive?: boolean
 }
 
 /**
  * Import a funded wallet for a given Telegram user id.
  *
+ * Adds it to that user's wallet list - it never replaces an existing keystore,
+ * so importing cannot orphan funds. It also leaves the user-level withdrawal
+ * address and its 24h lock untouched, so importing is not a way to reset that
+ * protection.
+ *
  * Guards, all fail-closed:
  *  1. Validate the key and derive its address before touching anything.
- *  2. Cross-user collision: refuse if another user already owns this address -
- *     two users sharing a wallet means either can drain it and their panic /
- *     withdrawal controls conflict. Hard stop, no override.
- *  3. Overwrite guard: refuse to replace an existing record without `overwrite`,
- *     and refuse even with `overwrite` if the OLD wallet still holds funds -
- *     replacing the keystore discards the old key and orphans them.
+ *  2. Collision: refuse if ANY user (including this one) already holds that
+ *     address. Two owners of one wallet means conflicting panic/withdrawal
+ *     controls. Hard stop, no override.
  */
 export async function importWallet(
   registry: UserRegistry,
   opts: ImportOptions,
-): Promise<{ address: string; replaced: string | null }> {
+): Promise<{ address: string; replaced: string | null; walletId: string }> {
   // 1. Validate first. Never mutate state on a bad key.
   const account = deriveAccount(opts.privateKey)
   const address = account.address
 
-  // 2. Cross-user collision.
-  const collision = registry.all().find((u) => u.telegramId !== opts.telegramId && u.address === address)
-  if (collision) {
-    throw new Error(
-      `wallet ${address} is already assigned to user ${collision.telegramId}. ` +
-        `Two users must never share a wallet. Refusing.`,
-    )
+  // 2. Collision: no wallet may be owned twice, by anyone. Two users sharing a
+  //    wallet means either can drain it and their panic/withdrawal controls
+  //    conflict; the same user holding it twice is just confusing state.
+  for (const u of registry.all()) {
+    const dup = u.wallets.find((w) => w.address === address)
+    if (dup) {
+      throw new Error(
+        u.telegramId === opts.telegramId
+          ? `you already have this wallet imported as "${dup.label}". Nothing to do.`
+          : `wallet ${address} is already assigned to user ${u.telegramId}. ` +
+            `Two users must never share a wallet. Refusing.`,
+      )
+    }
   }
 
   const existing = registry.get(opts.telegramId)
-  if (existing) {
-    if (!opts.overwrite) {
-      throw new Error(
-        `user ${opts.telegramId} already has wallet ${existing.address}. ` +
-          `Importing would replace it. Re-run with --overwrite (only after checking the old wallet is empty).`,
-      )
-    }
-    // 3b. Balance guard on the OLD address, so an overwrite never orphans funds.
-    // Fail CLOSED: overwrite without a balance check is refused, because
-    // discarding a funded wallet's key is irreversible.
-    if (!opts.balanceOf) {
-      throw new Error('overwrite requires a balance check but none was provided - refusing (fail-closed).')
-    }
-    const bals = await opts.balanceOf(existing.address as Address)
-    if (bals.usdc > 0n || bals.native > 0n) {
-      throw new Error(
-        `the existing wallet ${existing.address} still holds funds (USDC ${bals.usdc}, native ${bals.native}). ` +
-          `Withdraw/sweep it first - overwriting discards its key and strands those funds.`,
-      )
-    }
-    // We can only check the assets we know about (USDC + native, on the chains
-    // we query). Arbitrary bought tokens cannot be enumerated cheaply, so warn
-    // loudly rather than pretend the wallet is provably empty.
-    log.warn(
-      { address: existing.address },
-      'OVERWRITE: old wallet has no USDC/native, but any other token balances CANNOT be auto-checked. ' +
-        'Confirm the wallet is empty of bought tokens before proceeding.',
-    )
-  }
 
-  const replaced = existing?.address ?? null
-  await registry.importExternalKey(opts.telegramId, opts.privateKey, opts.username ?? existing?.username ?? null)
+  // Importing now ADDS a wallet, so it can never discard an existing keystore
+  // and orphan funds. The old destructive-overwrite path is gone entirely.
+  const { user, wallet } = await registry.importExternalKey(
+    opts.telegramId,
+    opts.privateKey,
+    opts.username ?? existing?.username ?? null,
+    opts.label ?? 'Imported',
+    opts.makeActive ?? true,
+  )
 
-  audit('wallet.imported', opts.telegramId, { address, replaced })
-  log.info({ telegramId: opts.telegramId, address, replaced }, 'imported external wallet')
-  return { address, replaced }
+  audit('wallet.imported', opts.telegramId, { address, walletId: wallet.id, label: wallet.label })
+  log.info(
+    { telegramId: opts.telegramId, address, walletId: wallet.id, totalWallets: user.wallets.length },
+    'imported external wallet',
+  )
+  return { address, replaced: null, walletId: wallet.id }
 }
 
 /**
@@ -152,14 +142,15 @@ export function readKeyFile(path: string, shred = true): string {
 export async function exportWallet(
   registry: UserRegistry,
   telegramId: number,
+  walletId?: string,
 ): Promise<{ address: string; privateKey: string }> {
   const user = registry.get(telegramId)
   if (!user) throw new Error(`no wallet for user ${telegramId}`)
 
-  const privateKey = await registry.exportPrivateKey(telegramId)
-  audit('wallet.exported', telegramId, { address: user.address })
-  log.warn({ telegramId, address: user.address }, 'private key exported to local terminal')
-  return { address: user.address, privateKey }
+  const result = await registry.exportPrivateKey(telegramId, walletId)
+  audit('wallet.exported', telegramId, { address: result.address, walletId: walletId ?? user.activeWalletId })
+  log.warn({ telegramId, address: result.address }, 'private key exported to local terminal')
+  return result
 }
 
 function deriveAccount(pk: string) {

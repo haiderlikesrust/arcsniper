@@ -100,13 +100,21 @@ export function denyAccess(telegramId: number, username: string | undefined, rea
   log.warn({ telegramId, username, reason }, 'access denied')
 }
 
-/** Simple in-memory sliding-window rate limiter. */
+/**
+ * Sliding-window rate limiter with eviction.
+ *
+ * The map is populated BEFORE the allowlist check (so strangers flooding the bot
+ * are throttled too), which means it must not grow without bound - otherwise the
+ * throttle itself becomes the memory-exhaustion vector. Idle entries are swept.
+ */
 export class RateLimiter {
   private hits = new Map<number, number[]>()
+  private lastSweep = 0
 
   constructor(private readonly perMinute: number) {}
 
   check(telegramId: number, nowMs = Date.now()): boolean {
+    this.sweep(nowMs)
     const windowStart = nowMs - 60_000
     const recent = (this.hits.get(telegramId) ?? []).filter((t) => t > windowStart)
     if (recent.length >= this.perMinute) {
@@ -116,6 +124,21 @@ export class RateLimiter {
     recent.push(nowMs)
     this.hits.set(telegramId, recent)
     return true
+  }
+
+  /** Drop entries with no activity in the last window. Cheap, amortised. */
+  private sweep(nowMs: number): void {
+    if (nowMs - this.lastSweep < 60_000) return
+    this.lastSweep = nowMs
+    const cutoff = nowMs - 60_000
+    for (const [id, times] of this.hits) {
+      if (!times.some((t) => t > cutoff)) this.hits.delete(id)
+    }
+  }
+
+  /** Test/diagnostic hook. */
+  size(): number {
+    return this.hits.size
   }
 }
 
@@ -128,8 +151,23 @@ export class RateLimiter {
  */
 export function looksLikeSecret(text: string): 'private-key' | 'mnemonic' | null {
   const trimmed = text.trim()
-  if (/(^|\s)(0x)?[0-9a-fA-F]{64}(\s|$)/.test(trimmed)) return 'private-key'
-  const words = trimmed.split(/\s+/)
-  if (words.length >= 12 && words.every((w) => /^[a-z]{3,8}$/.test(w))) return 'mnemonic'
+
+  // Match 64 hex chars anywhere they are not adjacent to more hex. Requiring
+  // whitespace boundaries (the old rule) missed every realistic paste:
+  // `key=0xabc...`, `"0xabc..."`, `` `0xabc...` ``, `pk:0xabc...`.
+  // Note this also matches a 32-byte tx hash. That false positive is deliberate:
+  // refusing a tx hash is a trivial annoyance, missing a real key is not.
+  if (/(?<![0-9a-fA-F])(?:0x)?[0-9a-fA-F]{64}(?![0-9a-fA-F])/.test(trimmed)) return 'private-key'
+
+  // Seed phrases: strip punctuation/numbering and lowercase before checking, so
+  // "1. Abandon, 2. Ability, ..." is still caught. The old shape-only rule was
+  // defeated by a single capital letter or comma.
+  const words = trimmed
+    .toLowerCase()
+    .replace(/[^a-z\s]/g, ' ')
+    .split(/\s+/)
+    .filter(Boolean)
+  if (words.length >= 12 && words.filter((w) => /^[a-z]{3,8}$/.test(w)).length >= 12) return 'mnemonic'
+
   return null
 }
