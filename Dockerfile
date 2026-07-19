@@ -26,8 +26,10 @@ FROM node:20-bookworm-slim AS runtime
 ENV NODE_ENV=production
 WORKDIR /app
 
-# tini as PID 1 for correct signal handling (clean SIGTERM -> bot.stop()).
-RUN apt-get update && apt-get install -y --no-install-recommends tini && rm -rf /var/lib/apt/lists/*
+# Signal handling (clean SIGTERM -> bot.stop()) comes from docker-compose's
+# `init: true`, which injects its own init as PID 1. Adding tini here too would
+# leave it running as a non-PID-1 child, which just emits a subreaper warning
+# and does nothing useful.
 
 # Copy only what the runtime needs. NO secrets, NO data/, NO .env - see
 # .dockerignore. Config is bind-mounted read-only at run time, not baked in.
@@ -45,5 +47,4 @@ USER node
 # Long-polling only - no inbound port is exposed. The bot reaches out to
 # api.telegram.org and the RPCs; nothing needs to reach in.
 
-ENTRYPOINT ["/usr/bin/tini", "--"]
 CMD ["node", "dist/index.js", "telegram", "--live"]

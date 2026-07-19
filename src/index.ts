@@ -228,7 +228,10 @@ async function cmdTelegram(argv: string[]): Promise<void> {
   const token = process.env[cfg.botTokenEnv]
   if (!token) {
     throw new Error(
-      `${cfg.botTokenEnv} is not set. Create a bot with @BotFather and put the token in .env.`,
+      `Environment variable "${cfg.botTokenEnv}" is not set.\n\n` +
+        `Put your @BotFather token in .env as:\n` +
+        `  ${cfg.botTokenEnv}=123456:AA...\n\n` +
+        `(config/telegram.json's "botTokenEnv" holds the variable NAME, not the token.)`,
     )
   }
 

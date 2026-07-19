@@ -46,6 +46,22 @@ export function loadTelegramConfig(path = TELEGRAM_CONFIG_PATH): TelegramConfig 
   if (!parsed.success) {
     throw new Error(`invalid ${path}:\n${parsed.error.issues.map((i) => `  - ${i.path.join('.')}: ${i.message}`).join('\n')}`)
   }
+  // Easy mistake: pasting the actual bot token into `botTokenEnv`, which is the
+  // NAME of an environment variable, not the token. Detect the token shape
+  // (digits, colon, secret) and say so plainly - otherwise the failure reads as
+  // "<your token> is not set", which is baffling. Also tell them to revoke it,
+  // since it has now been written to a config file in the clear.
+  if (/^\d+:[A-Za-z0-9_-]{20,}$/.test(parsed.data.botTokenEnv)) {
+    throw new Error(
+      `${path}: "botTokenEnv" must be the NAME of an environment variable (e.g. "TELEGRAM_BOT_TOKEN"), ` +
+        `not the token itself. You appear to have pasted the real token there.\n\n` +
+        `  1. Set  "botTokenEnv": "TELEGRAM_BOT_TOKEN"  in ${path}\n` +
+        `  2. Put  TELEGRAM_BOT_TOKEN=<your token>  in .env\n` +
+        `  3. REVOKE that token via @BotFather (/mybots -> API Token -> Revoke) - ` +
+        `it was stored in plaintext and should be considered compromised.`,
+    )
+  }
+
   if (parsed.data.allowedUserIds.length === 0) {
     throw new Error(
       `${path} has an empty allowedUserIds list. Refusing to start an open custodial bot. ` +

@@ -20,9 +20,17 @@
   "adminUserIds": [],
 
   "defaultCaps": {
-    "$comment": "Hard ceilings per user. Cannot be raised from Telegram - only here.",
+    "$comment": [
+      "Hard ceilings per user. Cannot be raised from Telegram - only here.",
+      "maxBridgeUsdc MUST be greater than maxSpendUsdc: USDC is the gas token on",
+      "Arc, so the difference is what pays for the swap itself. The bot refuses to",
+      "start if you get this backwards.",
+      "",
+      "These apply to wallets created AFTER you change them - existing users keep",
+      "the caps stored on their record."
+    ],
     "maxSpendUsdc": "250.00",
-    "maxBridgeUsdc": "250.00"
+    "maxBridgeUsdc": "260.00"
   },
 
   "rateLimitPerMinute": 20
