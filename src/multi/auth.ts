@@ -1,5 +1,6 @@
 import { readFileSync, existsSync } from 'node:fs'
 import { resolve } from 'node:path'
+import { english } from 'viem/accounts'
 import { z } from 'zod'
 import { audit } from './audit.js'
 import { log } from '../log.js'
@@ -149,25 +150,38 @@ export class RateLimiter {
  * bot users lose funds. We cannot un-send it from Telegram's servers, but we
  * can refuse to process it and tell them, loudly, to treat that key as burned.
  */
+/** Real BIP-39 English wordlist (2048 words), for accurate seed-phrase detection. */
+const BIP39 = new Set(english)
+
+/** Valid BIP-39 mnemonic lengths. */
+const MNEMONIC_LENGTHS = new Set([12, 15, 18, 21, 24])
+
 export function looksLikeSecret(text: string): 'private-key' | 'mnemonic' | null {
   const trimmed = text.trim()
 
   // Match 64 hex chars anywhere they are not adjacent to more hex. Requiring
-  // whitespace boundaries (the old rule) missed every realistic paste:
-  // `key=0xabc...`, `"0xabc..."`, `` `0xabc...` ``, `pk:0xabc...`.
-  // Note this also matches a 32-byte tx hash. That false positive is deliberate:
+  // whitespace boundaries missed every realistic paste: `key=0xabc...`,
+  // `"0xabc..."`, `` `0xabc...` ``, `pk:0xabc...`.
+  // This also matches a 32-byte tx hash. That false positive is deliberate:
   // refusing a tx hash is a trivial annoyance, missing a real key is not.
   if (/(?<![0-9a-fA-F])(?:0x)?[0-9a-fA-F]{64}(?![0-9a-fA-F])/.test(trimmed)) return 'private-key'
 
-  // Seed phrases: strip punctuation/numbering and lowercase before checking, so
-  // "1. Abandon, 2. Ability, ..." is still caught. The old shape-only rule was
-  // defeated by a single capital letter or comma.
+  // Seed phrases: check against the ACTUAL BIP-39 wordlist, not a shape
+  // heuristic. A "12+ short words" rule flags ordinary English - including this
+  // bot's own menu text - which trains people to dismiss the one warning that
+  // matters. Strip punctuation/numbering first so "1. Abandon, 2. Ability..."
+  // is still caught.
   const words = trimmed
     .toLowerCase()
     .replace(/[^a-z\s]/g, ' ')
     .split(/\s+/)
     .filter(Boolean)
-  if (words.length >= 12 && words.filter((w) => /^[a-z]{3,8}$/.test(w)).length >= 12) return 'mnemonic'
+
+  if (MNEMONIC_LENGTHS.has(words.length)) {
+    const inList = words.filter((w) => BIP39.has(w)).length
+    // Allow one typo in a real phrase, but require essentially all of it.
+    if (inList >= words.length - 1) return 'mnemonic'
+  }
 
   return null
 }

@@ -206,6 +206,69 @@ describe('secret detection - punctuated pastes', () => {
   })
 })
 
+describe('secret detection - false positives', () => {
+  // Regression: the bot's own menu text was being flagged as a seed phrase,
+  // which made every button press fail. Two causes - the guard scanned
+  // ctx.msg (which is the BOT's message on a callback query), and the mnemonic
+  // rule was "12+ short words" rather than an actual BIP-39 check.
+  test('does not flag the bot menu text', () => {
+    const menu =
+      'arcsniper\n\n' +
+      'Wallet: Main 0x615c...5e01\n' +
+      'USDC 0.0 | ETH 0.00000 (Base)\n\n' +
+      'Withdraw to: not set\n' +
+      'Spend 20.00 / Bridge 25.00 USDC | Slippage 300bps\n' +
+      'Target: none not armed'
+    assert.equal(looksLikeSecret(menu), null)
+  })
+
+  test('does not flag ordinary long English', () => {
+    assert.equal(
+      looksLikeSecret('hey can you tell me how i set up the bot and then add some money to it please mate'),
+      null,
+    )
+  })
+
+  test('does not flag a wallets-menu listing', () => {
+    assert.equal(
+      looksLikeSecret('Your wallets Main generated 0.0 USDC 0.0 ETH The wallet marked is the one that trades'),
+      null,
+    )
+  })
+
+  test('still catches a real 12-word BIP-39 phrase', () => {
+    assert.equal(
+      looksLikeSecret('legal winner thank year wave sausage worth useful legal winner thank yellow'),
+      'mnemonic',
+    )
+  })
+
+  test('still catches a real 24-word BIP-39 phrase', () => {
+    assert.equal(
+      looksLikeSecret(
+        'legal winner thank year wave sausage worth useful legal winner thank yellow ' +
+          'legal winner thank year wave sausage worth useful legal winner thank yellow',
+      ),
+      'mnemonic',
+    )
+  })
+
+  test('catches a real phrase with one typo', () => {
+    // One wrong word should not let a genuine phrase through.
+    assert.equal(
+      looksLikeSecret('legal winner thank year wave sausage worth useful legal winner thank zzzzz'),
+      'mnemonic',
+    )
+  })
+
+  test('does not flag 12 non-BIP39 words', () => {
+    assert.equal(
+      looksLikeSecret('alpha bravo charlie delta echo foxtrot golf hotel india juliet kilo limaa'),
+      null,
+    )
+  })
+})
+
 describe('rate limiter eviction', () => {
   test('idle entries are swept so strangers cannot grow it forever', () => {
     // The limiter runs BEFORE the allowlist, so unbounded growth would make the

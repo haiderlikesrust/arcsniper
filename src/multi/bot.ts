@@ -96,9 +96,15 @@ export function createBot(token: string, deps: BotDeps): Bot {
       return
     }
 
-    // Secret detection, above every handler. Uses ctx.msg so it also covers
-    // captions and edited messages, not just plain text.
-    const text = ctx.msg?.text ?? ctx.msg?.caption
+    // Secret detection, above every handler.
+    //
+    // Only ever scan text the USER authored. Deliberately NOT ctx.msg: on a
+    // callback query that resolves to ctx.callbackQuery.message - the bot's OWN
+    // menu - so every button press was being scanned as if it were user input.
+    // Button presses carry no user text at all, so there is nothing to check.
+    const text = ctx.callbackQuery
+      ? undefined
+      : ctx.message?.text ?? ctx.message?.caption ?? ctx.editedMessage?.text ?? ctx.editedMessage?.caption
     if (text) {
       const secret = looksLikeSecret(text)
       if (secret) {
