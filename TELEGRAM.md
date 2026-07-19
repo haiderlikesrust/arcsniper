@@ -133,13 +133,24 @@ Guards, all fail-closed:
 - refuses if that wallet is already held by anyone, including the same user
 - validates the key cryptographically *before* shredding the file, so a bad key file isn't destroyed before you learn it was bad
 
-**Export** (backup, or a user leaving) also runs only on the host and prints to your terminal:
+## Exporting a private key
+
+Two ways. Both give you the real key — it re-derives the same address and works in MetaMask or any other wallet, so you are never locked into this bot.
+
+**From Telegram** (Wallets → Export a private key): pick the wallet, confirm, and the bot sends the key then deletes its own message after 90 seconds.
+
+Be clear-eyed about what the delete does and doesn't do. It keeps the key out of your scrollback and off a shared screen. It does **not** un-send it — Telegram received it, and someone who later compromises that account may recover it from backups or a synced device. Export a wallet, then move its funds to a fresh one.
+
+Disable it entirely with `"allowTelegramExport": false` in `config/telegram.json` (tune the window with `exportMessageTtlSeconds`).
+
+**From the host** (never touches Telegram):
 
 ```bash
-node --import tsx src/index.ts export --telegram-id 123456 --i-understand-this-exposes-the-key
+docker compose run --rm bot \
+  node dist/index.js export --telegram-id 123456 --i-understand-this-exposes-the-key
 ```
 
-Users who simply want their money out don't need export — they use `/withdraw`, which sends to their registered address and never exposes a key.
+**If you only want your money out, use Withdraw instead.** It sends to your registered address and never exposes a key. Export is for taking custody of the *wallet*, not the *funds*.
 
 ## Operating notes
 

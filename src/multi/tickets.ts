@@ -25,6 +25,7 @@ export type TicketAction =
   | 'wallet.new'
   | 'wallet.activate'
   | 'wallet.withdraw'
+  | 'wallet.export'
   | 'target.arm'
   | 'settings.set'
   | 'panic'

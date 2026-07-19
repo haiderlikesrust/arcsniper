@@ -206,6 +206,96 @@ describe('secret detection - punctuated pastes', () => {
   })
 })
 
+describe('wallet export', () => {
+  test('exports a key that re-derives the same address', async () => {
+    // The whole point of export: the key you get back must actually control
+    // the wallet you were shown. A mismatch here would hand someone a useless
+    // string while they believe they have custody.
+    const cwd = process.cwd()
+    try {
+      const { UserRegistry } = await loadRegistry()
+      const { exportWallet } = await import('../src/multi/importExport.ts?' + Math.random())
+      const { privateKeyToAccount } = await import('viem/accounts')
+      const reg = new UserRegistry('test-master-passphrase')
+      const user = await reg.create(1, 'a')
+
+      const result = await exportWallet(reg, 1)
+      assert.equal(result.address, user.wallets[0]!.address)
+      assert.equal(
+        privateKeyToAccount(result.privateKey as `0x${string}`).address,
+        user.wallets[0]!.address,
+        'exported key must derive the wallet address',
+      )
+    } finally {
+      process.chdir(cwd)
+    }
+  })
+
+  test('can export a specific non-active wallet', async () => {
+    const cwd = process.cwd()
+    try {
+      const { UserRegistry } = await loadRegistry()
+      const { exportWallet } = await import('../src/multi/importExport.ts?' + Math.random())
+      const { privateKeyToAccount } = await import('viem/accounts')
+      const reg = new UserRegistry('test-master-passphrase')
+      const user = await reg.create(1, 'a')
+      const second = await reg.addGeneratedWallet(1, 'Second')
+
+      // Active is still the first wallet; exporting the second must return the
+      // SECOND one's key, not the active one's.
+      assert.equal(reg.get(1)!.activeWalletId, user.wallets[0]!.id)
+      const result = await exportWallet(reg, 1, second.id)
+      assert.equal(result.address, second.address)
+      assert.equal(privateKeyToAccount(result.privateKey as `0x${string}`).address, second.address)
+    } finally {
+      process.chdir(cwd)
+    }
+  })
+
+  test('an exported key is portable to a different instance', async () => {
+    // Proves you are not locked in: the exported key works somewhere else
+    // entirely (a fresh registry stands in for another server / MetaMask).
+    const cwd = process.cwd()
+    try {
+      const { UserRegistry } = await loadRegistry()
+      const { exportWallet } = await import('../src/multi/importExport.ts?' + Math.random())
+      const regA = new UserRegistry('passphrase-of-instance-A')
+      const user = await regA.create(1, 'a')
+      const exported = await exportWallet(regA, 1)
+
+      // A completely separate instance, different data dir, different passphrase.
+      const { UserRegistry: FreshRegistry } = await loadRegistry()
+      const { importWallet } = await import('../src/multi/importExport.ts?' + Math.random())
+      const regB = new FreshRegistry('a-totally-different-passphrase')
+      const imported = await importWallet(regB, { telegramId: 99, privateKey: exported.privateKey })
+
+      assert.equal(imported.address, user.wallets[0]!.address, 'same wallet, different instance')
+    } finally {
+      process.chdir(cwd)
+    }
+  })
+
+  test('the same wallet cannot be held by two users on one instance', async () => {
+    // The flip side: portability must not become cross-user sharing, where two
+    // people can both drain one wallet and their panic controls conflict.
+    const cwd = process.cwd()
+    try {
+      const { UserRegistry } = await loadRegistry()
+      const { exportWallet, importWallet } = await import('../src/multi/importExport.ts?' + Math.random())
+      const reg = new UserRegistry('test-master-passphrase')
+      await reg.create(1, 'a')
+      const exported = await exportWallet(reg, 1)
+
+      await assert.rejects(
+        () => importWallet(reg, { telegramId: 2, privateKey: exported.privateKey }),
+        /already assigned to user 1/,
+      )
+    } finally {
+      process.chdir(cwd)
+    }
+  })
+})
+
 describe('secret detection - false positives', () => {
   // Regression: the bot's own menu text was being flagged as a seed phrase,
   // which made every button press fail. Two causes - the guard scanned

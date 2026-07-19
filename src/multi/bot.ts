@@ -194,6 +194,7 @@ export function createBot(token: string, deps: BotDeps): Bot {
       'never be sent through Telegram.'
 
     kb.text('New wallet', ticketData(user, 'wallet.new', {})).row()
+    if (cfg.allowTelegramExport) kb.text('Export a private key', 'nav:export_pick').row()
     kb.text('Set withdraw address', 'nav:setwithdraw').row()
     if (user.pendingWithdrawalAddress) kb.text('Cancel pending address change', 'nav:cancelwithdraw').row()
     kb.text('Withdraw all', 'nav:withdraw').row()
@@ -398,6 +399,26 @@ export function createBot(token: string, deps: BotDeps): Bot {
             kb,
           ))
         }
+        case 'export_pick': {
+          if (!cfg.allowTelegramExport) {
+            toast = { text: 'Key export is disabled by the operator.', show_alert: true }
+            return
+          }
+          const kb = new InlineKeyboard()
+          for (const w of user.wallets) {
+            kb.text(`${w.label} (${short(w.address)})`, `nav:export_one:${w.id}`).row()
+          }
+          kb.text('Cancel', 'nav:wallets')
+          return void (await render(
+            ctx,
+            '*Export a private key*\n\nWhich wallet?\n\n' +
+              '_Exporting sends the key through Telegram. I delete my message after ' +
+              `${cfg.exportMessageTtlSeconds}s, but I cannot un-send it - Telegram has it. ` +
+              'Treat any exported wallet as compromised and move its funds to a fresh one.\n\n' +
+              'If you only want your money out, use Withdraw instead - that never exposes a key._',
+            kb,
+          ))
+        }
         case 'arm_confirm': {
           if (!user.tokenAddress) {
             toast = { text: 'Set a token first.', show_alert: true }
@@ -415,8 +436,33 @@ export function createBot(token: string, deps: BotDeps): Bot {
             kb,
           ))
         }
-        default:
+        default: {
+          // Routes carrying a server-known id: nav:export_one:<walletId>
+          if (route.startsWith('export_one:')) {
+            if (!cfg.allowTelegramExport) {
+              toast = { text: 'Key export is disabled by the operator.', show_alert: true }
+              return
+            }
+            const walletId = route.slice('export_one:'.length)
+            const w = user.wallets.find((x) => x.id === walletId)
+            if (!w) {
+              toast = { text: 'No such wallet.', show_alert: true }
+              return
+            }
+            const kb = new InlineKeyboard()
+              .text('Cancel', 'nav:wallets')
+              .text('Yes, show the key', ticketData(user, 'wallet.export', { walletId: w.id }))
+            return void (await render(
+              ctx,
+              `*Export "${w.label}"?*\n\n\`${w.address}\`\n\n` +
+                `I will send the private key and delete my message after ${cfg.exportMessageTtlSeconds}s.\n\n` +
+                '*This wallet should be considered compromised afterwards.* Import it ' +
+                'somewhere you control, move the funds to a fresh wallet, and stop using this one.',
+              kb,
+            ))
+          }
           toast = { text: 'Unknown option.' }
+        }
       }
     } catch (err) {
       log.error({ err: (err as Error).message }, 'nav handler error')
@@ -496,6 +542,43 @@ export function createBot(token: string, deps: BotDeps): Bot {
               : `Sent *${formatUsdc(result.amount)} USDC* to \`${result.destination}\`\n\nTx: \`${result.txHash}\``,
             { parse_mode: 'Markdown' },
           )
+          return
+        }
+        case 'wallet.export': {
+          if (!cfg.allowTelegramExport) {
+            toast = { text: 'Key export is disabled by the operator.', show_alert: true }
+            return
+          }
+          const walletId = String(tk.plan.walletId)
+          const w = user.wallets.find((x) => x.id === walletId)
+          if (!w) {
+            toast = { text: 'No such wallet.', show_alert: true }
+            return
+          }
+
+          const { exportWallet } = await import('./importExport.js')
+          const result = await exportWallet(registry, id, walletId)
+
+          // Sent as its own message so it can be deleted independently of the
+          // menu. Deleting does NOT un-send it - Telegram still received it -
+          // but it keeps the key out of scrollback and off a shared screen.
+          const sent = await ctx.reply(
+            `*${w.label}*\n\`${result.address}\`\n\n` +
+              `Private key:\n\`${result.privateKey}\`\n\n` +
+              `_This message self-deletes in ${cfg.exportMessageTtlSeconds}s. Copy it now._\n\n` +
+              `*Treat this wallet as compromised.* Move its funds to a fresh wallet ` +
+              `and stop using it here.`,
+            { parse_mode: 'Markdown' },
+          )
+
+          setTimeout(() => {
+            ctx.api.deleteMessage(sent.chat.id, sent.message_id).catch(() => {
+              // Older than 48h, already gone, or permissions changed - nothing
+              // we can do, and the user was warned it is not un-sendable.
+            })
+          }, cfg.exportMessageTtlSeconds * 1000)
+
+          toast = { text: 'Key sent - copy it before it deletes.', show_alert: true }
           return
         }
         case 'target.arm': {

@@ -31,6 +31,23 @@ const configSchema = z.object({
     .default({ maxSpendUsdc: '250.00', maxBridgeUsdc: '250.00' }),
   /** Max commands per user per minute. */
   rateLimitPerMinute: z.number().int().positive().default(20),
+
+  /**
+   * Allow users to export a wallet's private key through Telegram.
+   *
+   * Convenient and sometimes necessary (it is their key, and a custodial system
+   * you cannot leave is its own problem), but understand the cost: the key is
+   * transmitted to Telegram's servers. The bot deletes its own message shortly
+   * after, which limits shoulder-surfing and casual scrollback, but does NOT
+   * un-send it. Anyone who later compromises that Telegram account may be able
+   * to recover it from backups or a synced device.
+   *
+   * Set false to force exports through the operator-local CLI instead.
+   */
+  allowTelegramExport: z.boolean().default(true),
+
+  /** Seconds before the bot deletes its own message containing an exported key. */
+  exportMessageTtlSeconds: z.number().int().min(10).max(600).default(90),
 })
 
 export type TelegramConfig = z.infer<typeof configSchema>

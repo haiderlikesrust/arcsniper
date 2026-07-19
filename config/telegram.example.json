@@ -33,5 +33,24 @@
     "maxBridgeUsdc": "260.00"
   },
 
-  "rateLimitPerMinute": 20
+  "rateLimitPerMinute": 20,
+
+  "$exportComment": [
+    "Let users export a wallet's private key from the Wallets menu.",
+    "",
+    "It is their key, and a custodial bot you cannot leave is its own problem -",
+    "so this defaults ON. But understand the cost: the key is transmitted to",
+    "Telegram's servers. The bot deletes its own message after the TTL below,",
+    "which keeps it out of scrollback and off a shared screen, but CANNOT",
+    "un-send it. Anyone who later compromises that Telegram account may recover",
+    "it from backups or a synced device.",
+    "",
+    "Set false to force exports through the operator-local CLI instead:",
+    "  arcbot export --telegram-id <id> --i-understand-this-exposes-the-key",
+    "",
+    "Note: users who only want their money out should use Withdraw, which sends",
+    "to their registered address and never exposes a key."
+  ],
+  "allowTelegramExport": true,
+  "exportMessageTtlSeconds": 90
 }
