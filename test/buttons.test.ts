@@ -1,6 +1,6 @@
 import { test, describe } from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdtempSync } from 'node:fs'
+import { mkdtempSync, readFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { TicketStore, stateHash } from '../src/multi/tickets.ts'
@@ -203,6 +203,46 @@ describe('secret detection - punctuated pastes', () => {
 
   test('still does not flag a plain address', () => {
     assert.equal(looksLikeSecret('0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913'), null)
+  })
+})
+
+describe('handler ordering', () => {
+  // Regression: bot.on('message:text') was registered BEFORE the admin commands
+  // and returned without calling next(), so it silently swallowed /unfreeze and
+  // /users - the user got no reply at all. Worse, a command typed while a
+  // prompt was open (e.g. /panic) was parsed as an address instead of running.
+  const src = readFileSync(new URL('../src/multi/bot.ts', import.meta.url), 'utf8')
+
+  test('the catch-all text handler is registered after every command', () => {
+    const catchAll = src.indexOf("bot.on('message:text'")
+    assert.ok(catchAll > 0, 'catch-all handler should exist')
+
+    const commandPositions = [...src.matchAll(/bot\.command\('(\w+)'/g)].map((m) => ({
+      name: m[1],
+      at: m.index!,
+    }))
+    assert.ok(commandPositions.length > 0)
+
+    const after = commandPositions.filter((c) => c.at > catchAll)
+    assert.deepEqual(
+      after.map((c) => c.name),
+      [],
+      `these commands are registered after the catch-all and would be swallowed: ${after.map((c) => c.name).join(', ')}`,
+    )
+  })
+
+  test('the catch-all calls next() instead of halting the chain', () => {
+    const start = src.indexOf("bot.on('message:text'")
+    const body = src.slice(start, start + 1800)
+    assert.match(body, /async \(ctx, next\)/, 'handler must accept next')
+    assert.match(body, /return next\(\)/, 'handler must pass unhandled messages downstream')
+  })
+
+  test('commands take precedence over an open prompt', () => {
+    // /panic must never be eaten by a "send me an address" prompt.
+    const start = src.indexOf("bot.on('message:text'")
+    const body = src.slice(start, start + 1800)
+    assert.match(body, /raw\.startsWith\('\/'\)/, 'handler must let commands through')
   })
 })
 

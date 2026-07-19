@@ -609,18 +609,67 @@ export function createBot(token: string, deps: BotDeps): Bot {
   })
 
   // -------------------------------------------------------------------------
-  // Typed replies for prompts (runs AFTER the secret guard, by registration order)
+  // Admin
   // -------------------------------------------------------------------------
 
-  bot.on('message:text', async (ctx) => {
-    const id = ctx.from.id
-    const pending = pendingInput.get(id)
-    if (!pending) return
-    const user = registry.get(id)
-    if (!user) return
-    pendingInput.delete(id)
+  bot.command('unfreeze', async (ctx) => {
+    if (!isAdmin(cfg, ctx.from!.id)) {
+      await ctx.reply('Admins only.')
+      return
+    }
+    const target = Number((ctx.match?.toString() ?? '').trim())
+    if (!Number.isInteger(target)) {
+      await ctx.reply('Usage: /unfreeze <telegramUserId>')
+      return
+    }
+    registry.setFrozen(target, false)
+    audit('user.unfrozen', target, { by: ctx.from!.id })
+    await ctx.reply(`User ${target} unfrozen.`)
+  })
 
+  bot.command('users', async (ctx) => {
+    if (!isAdmin(cfg, ctx.from!.id)) {
+      await ctx.reply('Admins only.')
+      return
+    }
+    const rows = registry.all().map((u) => {
+      const w = u.wallets.find((x) => x.id === u.activeWalletId)
+      return (
+        `${u.telegramId} ${u.username ? '@' + u.username : ''} ` +
+        `${u.wallets.length}w active=${w ? short(w.address) : '?'}` +
+        `${u.armed ? ' ARMED' : ''}${u.frozen ? ' FROZEN' : ''}`
+      )
+    })
+    await ctx.reply(rows.length ? rows.join('\n') : 'No users yet.')
+  })
+
+  // -------------------------------------------------------------------------
+  // Typed replies for prompts.
+  //
+  // Registered LAST on purpose: it matches any text message, so anything after
+  // it would never run. It must also always call next() when it does not handle
+  // the message, or it silently swallows every command below it.
+  // -------------------------------------------------------------------------
+
+  bot.on('message:text', async (ctx, next) => {
+    const id = ctx.from.id
     const raw = ctx.message.text.trim()
+
+    // Commands ALWAYS win over an open prompt. Without this, typing /panic
+    // while a "send me an address" prompt is open would be parsed as an
+    // address instead of freezing the account - the kill switch swallowed by
+    // a text box. Typing any command also cancels the prompt, which is what
+    // someone navigating away expects.
+    if (raw.startsWith('/')) {
+      pendingInput.delete(id)
+      return next()
+    }
+
+    const pending = pendingInput.get(id)
+    if (!pending) return next() // not for us - let other handlers see it
+    const user = registry.get(id)
+    if (!user) return next()
+    pendingInput.delete(id)
 
     try {
       if (pending.kind === 'withdraw_addr' || pending.kind === 'token_addr') {
@@ -713,41 +762,6 @@ export function createBot(token: string, deps: BotDeps): Bot {
       log.error({ err: (err as Error).message }, 'pending-input handler error')
       await ctx.reply('Something went wrong. Nothing was changed.')
     }
-  })
-
-  // -------------------------------------------------------------------------
-  // Admin
-  // -------------------------------------------------------------------------
-
-  bot.command('unfreeze', async (ctx) => {
-    if (!isAdmin(cfg, ctx.from!.id)) {
-      await ctx.reply('Admins only.')
-      return
-    }
-    const target = Number((ctx.match?.toString() ?? '').trim())
-    if (!Number.isInteger(target)) {
-      await ctx.reply('Usage: /unfreeze <telegramUserId>')
-      return
-    }
-    registry.setFrozen(target, false)
-    audit('user.unfrozen', target, { by: ctx.from!.id })
-    await ctx.reply(`User ${target} unfrozen.`)
-  })
-
-  bot.command('users', async (ctx) => {
-    if (!isAdmin(cfg, ctx.from!.id)) {
-      await ctx.reply('Admins only.')
-      return
-    }
-    const rows = registry.all().map((u) => {
-      const w = u.wallets.find((x) => x.id === u.activeWalletId)
-      return (
-        `${u.telegramId} ${u.username ? '@' + u.username : ''} ` +
-        `${u.wallets.length}w active=${w ? short(w.address) : '?'}` +
-        `${u.armed ? ' ARMED' : ''}${u.frozen ? ' FROZEN' : ''}`
-      )
-    })
-    await ctx.reply(rows.length ? rows.join('\n') : 'No users yet.')
   })
 
   bot.catch((err) => log.error({ err: err.message }, 'telegram handler error'))
