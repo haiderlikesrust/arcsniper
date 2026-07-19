@@ -52,5 +52,22 @@
     "to their registered address and never exposes a key."
   ],
   "allowTelegramExport": true,
-  "exportMessageTtlSeconds": 90
+  "exportMessageTtlSeconds": 90,
+
+  "$importComment": [
+    "Let users import an external wallet by pasting its private key in chat.",
+    "",
+    "Weigh this differently from export. Exporting exposes a bot-generated",
+    "wallet the user is told to abandon afterwards. IMPORTING exposes a wallet",
+    "that was SAFE until it was pasted - and the user then keeps using it.",
+    "",
+    "The bot deletes the incoming message immediately (which clears the chat and",
+    "synced devices) but cannot un-send it. Telegram received it.",
+    "",
+    "TURN THIS OFF BEFORE ONBOARDING OTHER PEOPLE. With it on, every user's",
+    "funded wallet key travels through Telegram. The operator-local CLI is",
+    "always available and never touches Telegram:",
+    "  arcbot import --telegram-id <id> --key-file /dev/shm/key.hex"
+  ],
+  "allowTelegramImport": true
 }

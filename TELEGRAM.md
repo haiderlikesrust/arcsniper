@@ -118,6 +118,18 @@ The withdrawal address is **per-user, not per-wallet** — deliberately. One tim
 
 ---
 
+## Importing a wallet from Telegram
+
+**Wallets → Import a wallet (paste key).** You get a warning screen, then the bot asks for the key. The moment it arrives the bot **deletes your message**, encrypts the key, and makes that wallet active.
+
+Understand the trade you're making. Deleting clears the chat and your synced devices — it does **not** un-send it. Telegram received that key, and anyone who later gets into your Telegram account may recover it. **A wallet that was safe stops being safe once you paste it here.** Move those funds to a fresh wallet when convenient.
+
+Two safer routes, if they fit:
+- **New wallet** + send funds to it from your existing wallet. Your real key never moves.
+- Operator import over SSH (below), which never touches Telegram.
+
+**Turn this off before onboarding other people** — `"allowTelegramImport": false`. With it on, every user's funded wallet key travels through Telegram, which is a much bigger blast radius than you doing it once for yourself.
+
 ## Importing a funded wallet (operator only)
 
 If you want the bot to trade from an **existing funded wallet** instead of a fresh generated one, you import it — but **never through Telegram**. A key in a chat message is a compromised key. Import runs on the host, over your SSH session:

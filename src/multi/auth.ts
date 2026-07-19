@@ -48,6 +48,25 @@ const configSchema = z.object({
 
   /** Seconds before the bot deletes its own message containing an exported key. */
   exportMessageTtlSeconds: z.number().int().min(10).max(600).default(90),
+
+  /**
+   * Allow users to import an external wallet by pasting its private key into
+   * Telegram.
+   *
+   * Weigh this differently from export. Exporting exposes a bot-generated
+   * wallet the user is told to abandon afterwards; importing exposes a wallet
+   * that was SAFE until the moment it was pasted, and the user then keeps using
+   * it. The key reaches Telegram's servers either way.
+   *
+   * The bot deletes the incoming message immediately (Bot API permits deleting
+   * incoming messages in private chats), which removes it from the chat and
+   * from synced devices - but it cannot un-send it.
+   *
+   * Turn this OFF before onboarding other people: with it on, every user's
+   * funded wallet key travels through Telegram. The operator-local CLI
+   * (`arcbot import --key-file`) stays available and never touches Telegram.
+   */
+  allowTelegramImport: z.boolean().default(true),
 })
 
 export type TelegramConfig = z.infer<typeof configSchema>

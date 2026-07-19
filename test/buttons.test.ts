@@ -246,6 +246,49 @@ describe('handler ordering', () => {
   })
 })
 
+describe('telegram key import', () => {
+  const src = readFileSync(new URL('../src/multi/bot.ts', import.meta.url), 'utf8')
+
+  test('the secret guard opens ONLY for a deliberate import', () => {
+    // The guard exists to catch accidental pastes. It may relax only when the
+    // user explicitly chose "Import a wallet" AND the operator enabled it -
+    // never for any other pending state.
+    assert.match(
+      src,
+      /const expectingKey = cfg\.allowTelegramImport && pendingInput\.get\(id\)\?\.kind === 'import_key'/,
+      'the exception must require both the feature flag and the import_key state',
+    )
+    assert.match(src, /if \(text && !expectingKey\)/, 'the guard must still run for every other case')
+  })
+
+  test('the pasted message is deleted before anything else', () => {
+    const start = src.indexOf("pending.kind === 'import_key'")
+    const body = src.slice(start, start + 2500)
+    const del = body.indexOf('deleteMessage')
+    const validate = body.indexOf('64 hex characters')
+    const imported = body.indexOf('importWallet')
+    assert.ok(del > 0, 'must delete the incoming message')
+    assert.ok(validate > del, 'deletion must happen before validation, which can throw')
+    assert.ok(imported > del, 'deletion must happen before the slow scrypt encrypt')
+  })
+
+  test('import is gated by config at both the menu and the handler', () => {
+    const gates = [...src.matchAll(/cfg\.allowTelegramImport/g)]
+    assert.ok(gates.length >= 3, `expected the flag checked at menu, prompt and handler; found ${gates.length}`)
+  })
+
+  test('the user is told the key cannot be un-sent', () => {
+    assert.match(src, /cannot\* un-send it|could not delete/, 'must not imply the key was scrubbed')
+    assert.match(src, /[Tt]reat this wallet as compromised/)
+  })
+
+  test('a failed deletion is surfaced, not silently ignored', () => {
+    const start = src.indexOf("pending.kind === 'import_key'")
+    const body = src.slice(start, start + 2200)
+    assert.match(body, /delete it yourself/, 'if deletion fails the user must be told to do it')
+  })
+})
+
 describe('bridge/spend gas reserve', () => {
   const src = readFileSync(new URL('../src/multi/bot.ts', import.meta.url), 'utf8')
 

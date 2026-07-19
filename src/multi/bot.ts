@@ -51,6 +51,7 @@ export interface BotDeps {
 
 type PendingInput =
   | { kind: 'withdraw_addr' }
+  | { kind: 'import_key' }
   | { kind: 'token_addr' }
   | { kind: 'amount'; field: 'spend' | 'bridge' | 'slippage' }
 
@@ -132,7 +133,13 @@ export function createBot(token: string, deps: BotDeps): Bot {
     const text = ctx.callbackQuery
       ? undefined
       : ctx.message?.text ?? ctx.message?.caption ?? ctx.editedMessage?.text ?? ctx.editedMessage?.caption
-    if (text) {
+    // The ONE deliberate exception: the user explicitly chose "Import a wallet"
+    // and is now being asked for a key. Everywhere else a key is an accident and
+    // gets refused. Narrow by construction - it requires the feature to be
+    // enabled AND that exact pending state, which only the import flow sets.
+    const expectingKey = cfg.allowTelegramImport && pendingInput.get(id)?.kind === 'import_key'
+
+    if (text && !expectingKey) {
       const secret = looksLikeSecret(text)
       if (secret) {
         // Disarm everything: leaving a prompt armed would make the user's next
@@ -271,6 +278,7 @@ export function createBot(token: string, deps: BotDeps): Bot {
       'never be sent through Telegram.'
 
     kb.text('New wallet', ticketData(user, 'wallet.new', {})).row()
+    if (cfg.allowTelegramImport) kb.text('Import a wallet (paste key)', 'nav:import_warn').row()
     if (cfg.allowTelegramExport) kb.text('Export a private key', 'nav:export_pick').row()
     kb.text('Set withdraw address', 'nav:setwithdraw').row()
     if (user.pendingWithdrawalAddress) kb.text('Cancel pending address change', 'nav:cancelwithdraw').row()
@@ -522,6 +530,43 @@ export function createBot(token: string, deps: BotDeps): Bot {
               `Amount: *${bal.usdc} USDC*\nTo: \`${settled.withdrawalAddress}\`\n\n` +
               `_This cannot be undone._`,
             kb,
+          ))
+        }
+        case 'import_warn': {
+          if (!cfg.allowTelegramImport) {
+            toast = { text: 'Key import is disabled by the operator.', show_alert: true }
+            return
+          }
+          const kb = new InlineKeyboard()
+            .text('Cancel', 'nav:wallets')
+            .text('I understand - continue', 'nav:import_ask')
+          return void (await render(
+            ctx,
+            '*Import a wallet by pasting its key*\n\n' +
+              'Read this first, it matters.\n\n' +
+              'Your key will travel through Telegram. I delete your message the ' +
+              'instant I receive it, which clears it from this chat and your other ' +
+              'devices - but I *cannot* un-send it. Telegram received it, and anyone ' +
+              'who later gets into your Telegram account may be able to recover it.\n\n' +
+              '*A wallet that was safe stops being safe once you paste it here.*\n\n' +
+              'Safer alternatives:\n' +
+              '- Use *New wallet* and send funds to it from your existing wallet. ' +
+              'Your real key never moves.\n' +
+              '- Ask the operator to import it over SSH, which never touches Telegram.\n\n' +
+              'If you continue, plan to move those funds to a fresh wallet later.',
+            kb,
+          ))
+        }
+        case 'import_ask': {
+          if (!cfg.allowTelegramImport) {
+            toast = { text: 'Key import is disabled by the operator.', show_alert: true }
+            return
+          }
+          pendingInput.set(user.telegramId, { kind: 'import_key' })
+          return void (await ctx.reply(
+            'Send the private key now (64 hex characters, with or without 0x).\n\n' +
+              'I will delete your message immediately. Send anything else, or open ' +
+              'another menu, to cancel.',
           ))
         }
         case 'export_pick': {
@@ -803,6 +848,58 @@ export function createBot(token: string, deps: BotDeps): Bot {
     pendingInput.delete(id)
 
     try {
+      if (pending.kind === 'import_key') {
+        // Delete the user's message FIRST, before any validation that could
+        // throw or take time. Bots may delete incoming messages in private
+        // chats. This does not un-send it - Telegram already has it - but it
+        // clears the chat and synced devices, which is the part we can control.
+        let deleted = false
+        try {
+          await ctx.api.deleteMessage(ctx.chat.id, ctx.message.message_id)
+          deleted = true
+        } catch (err) {
+          log.warn({ err: (err as Error).message }, 'could not delete the pasted key message')
+        }
+
+        if (!cfg.allowTelegramImport) {
+          await ctx.reply('Key import is disabled by the operator.')
+          return
+        }
+        if (!/^(0x)?[0-9a-fA-F]{64}$/.test(raw)) {
+          await ctx.reply(
+            'That is not a valid private key (expected 64 hex characters). Nothing was imported.' +
+              (deleted ? '' : '\n\nI could not delete your message - please delete it yourself.'),
+          )
+          return
+        }
+
+        const { importWallet } = await import('./importExport.js')
+        try {
+          const result = await importWallet(registry, {
+            telegramId: id,
+            privateKey: raw,
+            label: 'Imported',
+            makeActive: true,
+          })
+          await ctx.reply(
+            `Imported and now active:\n\`${result.address}\`\n\n` +
+              (deleted
+                ? 'I deleted your message.'
+                : '*I could not delete your message - delete it yourself now.*') +
+              '\n\n*Treat this wallet as compromised.* Its key went through Telegram. ' +
+              'Move the funds to a fresh wallet when you can.\n\n' +
+              (registry.get(id)?.withdrawalAddress
+                ? ''
+                : 'Set a withdrawal address before you can withdraw.'),
+            { parse_mode: 'Markdown' },
+          )
+        } catch (err) {
+          // Collision guard and validation failures land here.
+          await ctx.reply(`Import failed: ${(err as Error).message}`)
+        }
+        return
+      }
+
       if (pending.kind === 'withdraw_addr' || pending.kind === 'token_addr') {
         // Whole-message match only. A substring search on a message containing a
         // private key would happily extract the first 40 hex characters OF THE
