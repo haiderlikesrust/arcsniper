@@ -251,6 +251,27 @@ export class MultiOrchestrator {
       }
 
       await this.bridgeForUser(user)
+
+      // Bridge-only. Arming with no target means "get my USDC onto Arc the
+      // moment it is live, and do nothing else" - a first-class goal, not an
+      // unfinished setup. Re-read rather than trusting the snapshot: the target
+      // may have been cleared while the bridge was in flight.
+      const latest = this.opts.registry.get(id) ?? user
+      if (!latest.tokenAddress) {
+        this.opts.status.setUser(id, 'done', 'Bridged to Arc - no target set, so nothing was bought')
+        // Disarm so a later restart does not bridge a second time.
+        this.opts.registry.update(id, { armed: false })
+        audit('bridge.only_completed', id, { amount: latest.bridgeUsdc })
+        await this.safeNotify(
+          id,
+          `Done. Your USDC is on Arc.\n\nNo target was set, so nothing was bought and nothing was spent. ` +
+            `You have been disarmed.\n\nTo move funds off Arc, export this wallet's key from the ` +
+            `Wallets menu - the Withdraw button only covers Base.`,
+        )
+        this.runState.set(id, 'done')
+        return
+      }
+
       await this.buyForUser(user)
 
       this.runState.set(id, 'done')
