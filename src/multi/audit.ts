@@ -34,6 +34,8 @@ export type AuditAction =
   // audit trail even if the pending file is later cleared.
   | 'bridge.resumed'
   | 'bridge.completed'
+  /** Armed with no target: bridged to Arc and deliberately bought nothing. */
+  | 'bridge.only_completed'
   | 'buy.vetoed'
   | 'buy.executed'
   | 'auth.denied'

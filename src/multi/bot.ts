@@ -307,8 +307,8 @@ export function createBot(token: string, deps: BotDeps): Bot {
       `${balanceLine(bal)}\n\n` +
       `Withdraw to: ${settle.withdrawalAddress ? `<code>${escapeHtml(settle.withdrawalAddress)}</code>` : '<i>not set</i>'}${pend}\n` +
       `Spend ${user.spendUsdc} / Bridge ${user.bridgeUsdc} USDC | Slippage ${user.maxSlippageBps}bps\n` +
-      `Target: ${user.tokenAddress ? `<code>${escapeHtml(user.tokenAddress)}</code>` : '<i>none</i>'}\n` +
-      `${user.armed ? `${GLYPH.armed} <b>ARMED</b>` : 'Not armed'}\n\n` +
+      `Target: ${user.tokenAddress ? `<code>${escapeHtml(user.tokenAddress)}</code>` : '<i>none - bridge only</i>'}\n` +
+      `${user.armed ? `${GLYPH.armed} <b>ARMED${user.tokenAddress ? '' : ' (bridge only)'}</b>` : 'Not armed'}\n\n` +
       (step ? `<b>Next:</b> ${escapeHtml(step)}\n\n` : '') +
       statusBlock(user) +
       (user.frozen
@@ -491,18 +491,30 @@ export function createBot(token: string, deps: BotDeps): Bot {
 
   function targetView(user: StoredUser): { text: string; kb: InlineKeyboard } {
     const kb = new InlineKeyboard().text('Set token', 'nav:set_token').row()
-    if (user.tokenAddress && !user.armed) {
-      kb.text('ARM this target', 'nav:arm_confirm').row()
+    if (!user.armed) {
+      // Arming with no token is bridge-only, and is a deliberate mode rather
+      // than an incomplete setup: plenty of people only want their USDC on Arc
+      // the moment it is live.
+      kb.text(user.tokenAddress ? 'ARM this target' : 'ARM - bridge only, buy nothing', 'nav:arm_confirm').row()
+      if (user.tokenAddress) kb.text('Clear token (bridge only)', 'nav:clear_token').row()
     }
     if (user.armed) kb.text('Disarm', 'nav:disarm').row()
     kb.text('Back', 'nav:root')
-    const text =
-      `<b>Target</b>\n\n` +
-      `Token: ${user.tokenAddress ? `<code>${escapeHtml(user.tokenAddress)}</code>` : '<i>not set</i>'}\n` +
-      `Status: ${user.armed ? `${GLYPH.armed} <b>ARMED</b>` : 'not armed'}\n\n` +
-      `Spend ${user.spendUsdc} USDC at up to ${user.maxSlippageBps}bps slippage.\n\n` +
-      `<i>Safety checks run at buy time: contract exists, pool has real liquidity, ` +
-      `and a sell simulation to catch honeypots. The buy is refused if any fail.</i>`
+
+    const text = user.tokenAddress
+      ? `<b>Target</b>\n\n` +
+        `Token: <code>${escapeHtml(user.tokenAddress)}</code>\n` +
+        `Status: ${user.armed ? `${GLYPH.armed} <b>ARMED</b>` : 'not armed'}\n\n` +
+        `At launch: bridge ${user.bridgeUsdc} USDC to Arc, then spend ${user.spendUsdc} ` +
+        `at up to ${user.maxSlippageBps}bps slippage.\n\n` +
+        `<i>Safety checks run at buy time: contract exists, pool has real liquidity, ` +
+        `and a sell simulation to catch honeypots. The buy is refused if any fail.</i>`
+      : `<b>Target</b>\n\n` +
+        `Token: <i>none - bridge only</i>\n` +
+        `Status: ${user.armed ? `${GLYPH.armed} <b>ARMED (bridge only)</b>` : 'not armed'}\n\n` +
+        `At launch: bridge <b>${user.bridgeUsdc} USDC</b> to Arc and stop. ` +
+        `Nothing is bought and nothing is spent.\n\n` +
+        `<i>Set a token above if you also want to buy at launch.</i>`
     return { text, kb }
   }
 
@@ -915,20 +927,40 @@ export function createBot(token: string, deps: BotDeps): Bot {
             kb,
           ))
         }
+        case 'clear_token': {
+          registry.update(user.telegramId, { tokenAddress: null, armed: false })
+          audit('settings.changed', user.telegramId, { field: 'tokenAddress', value: null })
+          await ack({ text: 'Token cleared - bridge only.' })
+          const v = targetView(registry.get(ctx.from.id)!)
+          return void (await render(ctx, v.text, v.kb))
+        }
         case 'arm_confirm': {
-          if (!user.tokenAddress) {
-            return void (await ack({ text: 'Set a token first.', show_alert: true }))
-          }
           await ack()
+          // Null token is the bridge-only mode, not a missing setting. The plan
+          // records which one was confirmed so the press cannot execute the
+          // other - a token set between render and press must invalidate.
           const kb = new InlineKeyboard()
             .text('Cancel', 'nav:target')
-            .text(`ARM - spend ${user.spendUsdc} USDC`, ticketData(user, 'target.arm', { token: user.tokenAddress }))
+            .text(
+              user.tokenAddress ? `ARM - spend ${user.spendUsdc} USDC` : `ARM - bridge ${user.bridgeUsdc} USDC only`,
+              ticketData(user, 'target.arm', { token: user.tokenAddress ?? null }),
+            )
           return void (await render(
             ctx,
-            `<b>Arm this target?</b>\n\nToken:\n<code>${escapeHtml(user.tokenAddress)}</code>\n\n` +
-              `Spend: <b>${user.spendUsdc} USDC</b> at launch\nSlippage: ${user.maxSlippageBps} bps\n\n` +
-              `<b>Check that address against the official source one more time.</b> ` +
-              `Launch day is full of fake contracts using the real name.`,
+            user.tokenAddress
+              ? `<b>Arm this target?</b>\n\nToken:\n<code>${escapeHtml(user.tokenAddress)}</code>\n\n` +
+                  `Bridge: <b>${user.bridgeUsdc} USDC</b> to Arc\n` +
+                  `Spend: <b>${user.spendUsdc} USDC</b> at launch\nSlippage: ${user.maxSlippageBps} bps\n\n` +
+                  `<b>Check that address against the official source one more time.</b> ` +
+                  `Launch day is full of fake contracts using the real name.`
+              : `<b>Arm for bridging only?</b>\n\n` +
+                  `At launch I will move <b>${user.bridgeUsdc} USDC</b> from Base to Arc ` +
+                  `and stop there.\n\n` +
+                  `<b>No token is set, so nothing will be bought and nothing will be spent.</b> ` +
+                  `Your Spend setting is ignored in this mode.\n\n` +
+                  `<i>Once the funds are on Arc, the Withdraw button cannot move them - it only ` +
+                  `covers Base. To get them off Arc you would export this wallet's key from the ` +
+                  `Wallets menu and use it directly.</i>`,
             kb,
           ))
         }
@@ -1093,21 +1125,34 @@ export function createBot(token: string, deps: BotDeps): Bot {
           return
         }
         case 'target.arm': {
-          if (String(tk.plan.token) !== user.tokenAddress) {
+          // Null on both sides is the valid bridge-only case. String(null) would
+          // read as 'null' and never match, so compare the normalised values -
+          // otherwise arming bridge-only would always be refused.
+          const planned = (tk.plan.token as string | null) ?? null
+          if (planned !== (user.tokenAddress ?? null)) {
             return void (await ack({ text: 'Target changed. Re-check and arm again.', show_alert: true }))
           }
           await ack({ text: 'ARMED.' })
           const updated = registry.update(id, { armed: true })
-          audit('target.armed', id, { token: user.tokenAddress, spend: user.spendUsdc })
+          audit('target.armed', id, {
+            token: user.tokenAddress,
+            spend: user.spendUsdc,
+            bridgeOnly: user.tokenAddress === null,
+          })
           // Clear any terminal status from a PREVIOUS run, otherwise the menu
           // keeps reporting 'Complete 6/6' over a freshly armed order.
           deps.status.clearUser(id)
           deps.onArm?.(updated)
           await say(
             ctx,
-            `${GLYPH.armed} <b>ARMED</b>\n\nToken:\n<code>${escapeHtml(user.tokenAddress)}</code>\n` +
-              `Spend: ${user.spendUsdc} USDC\n\n` +
-              `You'll get a message when it executes or is refused. Use the Target menu or /panic to stop.`,
+            user.tokenAddress
+              ? `${GLYPH.armed} <b>ARMED</b>\n\nToken:\n<code>${escapeHtml(user.tokenAddress)}</code>\n` +
+                  `Bridge: ${user.bridgeUsdc} USDC\nSpend: ${user.spendUsdc} USDC\n\n` +
+                  `You'll get a message when it executes or is refused. Use the Target menu or /panic to stop.`
+              : `${GLYPH.armed} <b>ARMED - bridge only</b>\n\n` +
+                  `At launch I will move <b>${user.bridgeUsdc} USDC</b> to Arc and stop. ` +
+                  `Nothing will be bought.\n\n` +
+                  `You'll get a message when it completes or fails. Use the Target menu or /panic to stop.`,
             new InlineKeyboard().text('Menu', 'nav:root'),
           )
           return

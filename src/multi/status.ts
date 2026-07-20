@@ -154,8 +154,13 @@ export function nextStep(u: NextStepFacts, usdc: string | null): string | null {
     return 'Set a withdrawal address (Wallets). Do it now while the wallet is empty - it applies instantly; once there are funds in it the same change takes 24 hours.'
   }
   if (empty) return 'Fund this wallet: send USDC on Base to the address above.'
-  if (!u.tokenAddress) return 'Set the token you want to buy (Target).'
-  if (!u.armed) return 'Arm your target (Target) so the buy fires at launch.'
+  // Armed with no token is bridge-only, a deliberate mode - do not nag for a
+  // target the user has decided they do not want.
+  if (!u.armed) {
+    return u.tokenAddress
+      ? 'Arm your target (Target) so the buy fires at launch.'
+      : 'Arm it (Target). With no token set that bridges your USDC to Arc at launch and buys nothing - set a token first if you also want to buy.'
+  }
   if (noWithdrawAddress) {
     return 'Set a withdrawal address (Wallets) so you can get funds out. Your wallet already holds funds, so the change will be time-locked for 24 hours.'
   }

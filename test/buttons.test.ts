@@ -813,9 +813,20 @@ describe('next step', () => {
     assert.match(out, /time-locked for 24 hours/)
   })
 
-  test('a funded wallet with no target is told to set one', async () => {
+  test('a funded wallet with no target is offered bridge-only, not nagged', async () => {
+    // No token is a valid end state - bridging to Arc and buying nothing is a
+    // goal people actually have, so the hint must offer it rather than treat
+    // the setup as unfinished.
     const { nextStep } = await import('../src/multi/status.ts')
-    assert.match(nextStep({ ...base, withdrawalAddress: '0xW' }, '50.0')!, /token you want to buy/)
+    const out = nextStep({ ...base, withdrawalAddress: '0xW' }, '50.0')!
+    assert.match(out, /Arm it/)
+    assert.match(out, /buys nothing/, 'must say what bridge-only actually does')
+    assert.match(out, /set a token first/, 'must still signpost the buy path')
+  })
+
+  test('an armed bridge-only user is not nagged for a target', async () => {
+    const { nextStep } = await import('../src/multi/status.ts')
+    assert.equal(nextStep({ ...base, withdrawalAddress: '0xW', armed: true }, '50.0'), null)
   })
 
   test('a fully set-up armed user has nothing to do', async () => {
@@ -845,5 +856,64 @@ describe('next step', () => {
       '50.0',
     )
     assert.equal(out, null)
+  })
+})
+
+describe('bridge-only mode', () => {
+  // "I do not care about the token, I just want my money on Arc the moment it
+  // goes live." Arming used to require a target, and the pipeline always ran
+  // the buy - so the only way to get this was to set a token and hope the
+  // safety checks vetoed it, which would spend real money if they did not.
+  const src = readFileSync(new URL('../src/multi/bot.ts', import.meta.url), 'utf8')
+  const orch = readFileSync(new URL('../src/multi/multiOrchestrator.ts', import.meta.url), 'utf8')
+
+  test('arming no longer requires a token', () => {
+    const i = src.indexOf("case 'arm_confirm': {")
+    const body = src.slice(i, i + 400)
+    assert.doesNotMatch(body, /Set a token first/, 'a null target must not be refused')
+  })
+
+  test('the confirm card states plainly that nothing will be bought', () => {
+    const i = src.indexOf("case 'arm_confirm': {")
+    const body = src.slice(i, i + 2000)
+    assert.match(body, /nothing will be bought and nothing will be spent/)
+    assert.match(body, /Spend setting is ignored/, 'the ignored setting must be called out')
+  })
+
+  test('a null target survives the ticket comparison', () => {
+    // String(null) is 'null', which never equals a null tokenAddress - the
+    // naive comparison would refuse every bridge-only arm.
+    const i = src.indexOf("case 'target.arm': {")
+    const body = src.slice(i, i + 600)
+    assert.doesNotMatch(body, /String\(tk\.plan\.token\)/, 'must not stringify a null target')
+    assert.match(body, /\?\? null/, 'must normalise both sides before comparing')
+  })
+
+  test('the orchestrator stops after bridging when no target is set', () => {
+    const i = orch.indexOf('await this.bridgeForUser(user)')
+    const j = orch.indexOf('await this.buyForUser(user)')
+    assert.ok(i > 0 && j > i)
+    const between = orch.slice(i, j)
+    assert.match(between, /if \(!latest\.tokenAddress\)/, 'the bridge-only exit must sit between the two stages')
+    assert.match(between, /return/, 'it must return rather than fall through to the buy')
+  })
+
+  test('a completed bridge-only run disarms', () => {
+    // Otherwise a later restart re-runs it and bridges a second time.
+    const i = orch.indexOf('if (!latest.tokenAddress)')
+    const body = orch.slice(i, i + 900)
+    assert.match(body, /armed: false/)
+  })
+
+  test('the user is warned about Arc withdrawal BEFORE arming, not after', () => {
+    // The Withdraw button only covers Base. Someone bridging and stopping needs
+    // that on the confirm card, while they can still change their mind - a
+    // warning that only arrives once the funds are on Arc is too late.
+    const confirm = src.slice(src.indexOf("case 'arm_confirm': {"), src.indexOf("case 'arm_confirm': {") + 2000)
+    assert.match(confirm, /covers Base/, 'the confirm card must carry the warning')
+    assert.match(confirm, /export this wallet's key/, 'and say what the actual way out is')
+
+    // And repeated on completion, when it becomes actionable.
+    assert.match(orch.slice(orch.indexOf('if (!latest.tokenAddress)'), orch.indexOf('if (!latest.tokenAddress)') + 900), /only covers Base/)
   })
 })
