@@ -10,7 +10,7 @@ import { activeWallet, UserRegistry, type StoredUser, type StoredWallet } from '
 import { withdrawAll } from './withdraw.js'
 import { loadPending, userPendingPath } from '../bridge/recovery.js'
 import { TicketStore, stateHash } from './tickets.js'
-import { StatusBoard, phaseLabel, phaseProgress, ago, escapeHtml } from './status.js'
+import { StatusBoard, phaseLabel, phaseProgress, ago, escapeHtml, nextStep } from './status.js'
 
 /**
  * Button-driven Telegram UI.
@@ -292,20 +292,6 @@ export function createBot(token: string, deps: BotDeps): Bot {
    * it after funding arrives costs a 24-hour time lock. Doing it in the other
    * order silently costs the user a day.
    */
-  function nextStep(user: StoredUser, bal: Balances): string | null {
-    if (user.frozen) return 'Your account is frozen. Ask the operator to unfreeze it.'
-    if (!user.withdrawalAddress && !user.pendingWithdrawalAddress) {
-      return 'Set a withdrawal address (Wallets). Do it now while the wallet is empty - it applies instantly, but once there are funds in it the same change takes 24 hours.'
-    }
-    // Only claim "unfunded" when we actually read the balance.
-    if (bal.usdc !== null && Number(bal.usdc) === 0) {
-      return 'Fund this wallet: send USDC on Base to the address above.'
-    }
-    if (!user.tokenAddress) return 'Set the token you want to buy (Target).'
-    if (!user.armed) return 'Arm your target (Target) so the buy fires at launch.'
-    return null
-  }
-
   async function rootText(user: StoredUser): Promise<string> {
     const w = activeWallet(user)
     const bal = await balancesFor(w.address as Address)
@@ -313,7 +299,7 @@ export function createBot(token: string, deps: BotDeps): Bot {
     const pend = settle.pendingWithdrawalAddress
       ? `\nPending change to <code>${escapeHtml(settle.pendingWithdrawalAddress)}</code> <i>(press Wallets to cancel)</i>`
       : ''
-    const step = nextStep(settle, bal)
+    const step = nextStep(settle, bal.usdc)
 
     return (
       `<b>arcsniper</b>${deps.dryRun ? ' <i>(DRY RUN - nothing spends)</i>' : ''}\n\n` +

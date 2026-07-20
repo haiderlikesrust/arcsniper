@@ -518,21 +518,9 @@ describe('prompts and next steps', () => {
     assert.ok(promptCalls.length >= 6, `every typed-input route should use it; found ${promptCalls.length}`)
   })
 
-  test('the root card derives a next step from actual state', () => {
-    assert.match(src, /function nextStep\(user: StoredUser, bal: Balances\)/)
+  test('the root card renders the derived next step', () => {
+    assert.match(src, /nextStep\(settle, bal\.usdc\)/)
     assert.match(src, /<b>Next:<\/b>/)
-  })
-
-  test('the next step puts the withdrawal address before funding', () => {
-    // Setting it while empty is instant; after funds arrive the same change
-    // costs 24 hours. The wrong order silently costs the user a day.
-    const i = src.indexOf('function nextStep(')
-    const body = src.slice(i, i + 1200)
-    assert.ok(
-      body.indexOf('withdrawalAddress') < body.indexOf('Fund this wallet'),
-      'the withdrawal-address hint must come first',
-    )
-    assert.match(body, /it applies instantly/, 'the hint must say why the order matters')
   })
 
   test('the command list is registered so /panic is discoverable', () => {
@@ -775,5 +763,87 @@ describe('rate limiter eviction', () => {
 
     rl.check(999_999, t0 + 120_000) // triggers a sweep
     assert.ok(rl.size() < 500, `expected eviction, still holding ${rl.size()}`)
+  })
+})
+
+describe('next step', () => {
+  // Extracted from createBot precisely because it was a closure nobody could
+  // test, and it shipped telling a funded user to set a withdrawal address
+  // "while the wallet is empty - it applies instantly" when the change would
+  // in fact have been time-locked for 24 hours.
+  const base = {
+    frozen: false,
+    withdrawalAddress: null,
+    pendingWithdrawalAddress: null,
+    tokenAddress: null,
+    armed: false,
+  }
+
+  test('a frozen account is told that, and nothing else', async () => {
+    const { nextStep } = await import('../src/multi/status.ts')
+    assert.match(nextStep({ ...base, frozen: true }, '100.0')!, /frozen/)
+  })
+
+  test('an empty wallet is pushed to set the address while it is still instant', async () => {
+    const { nextStep } = await import('../src/multi/status.ts')
+    const out = nextStep(base, '0.0')!
+    assert.match(out, /withdrawal address/)
+    assert.match(out, /applies instantly/)
+  })
+
+  test('a FUNDED wallet is never told the change is instant', async () => {
+    // The exact bug: 116.302472 USDC on Base, no withdrawal address set.
+    const { nextStep } = await import('../src/multi/status.ts')
+    const out = nextStep({ ...base, tokenAddress: '0xToken', armed: false }, '116.302472')!
+    assert.doesNotMatch(out, /applies instantly/, 'must not promise an instant change on a funded wallet')
+    assert.doesNotMatch(out, /while the wallet is empty/, 'the wallet is not empty')
+  })
+
+  test('a funded, targeted, unarmed user is told to arm', async () => {
+    // Missing the launch you set up for is a bigger loss than an unset
+    // withdrawal address, which blocks withdrawing rather than trading.
+    const { nextStep } = await import('../src/multi/status.ts')
+    assert.match(nextStep({ ...base, tokenAddress: '0xToken' }, '116.302472')!, /Arm your target/)
+  })
+
+  test('the withdrawal-address hint returns once armed, with the 24h caveat', async () => {
+    const { nextStep } = await import('../src/multi/status.ts')
+    const out = nextStep({ ...base, tokenAddress: '0xToken', armed: true }, '116.302472')!
+    assert.match(out, /withdrawal address/)
+    assert.match(out, /time-locked for 24 hours/)
+  })
+
+  test('a funded wallet with no target is told to set one', async () => {
+    const { nextStep } = await import('../src/multi/status.ts')
+    assert.match(nextStep({ ...base, withdrawalAddress: '0xW' }, '50.0')!, /token you want to buy/)
+  })
+
+  test('a fully set-up armed user has nothing to do', async () => {
+    const { nextStep } = await import('../src/multi/status.ts')
+    assert.equal(
+      nextStep({ ...base, withdrawalAddress: '0xW', tokenAddress: '0xToken', armed: true }, '50.0'),
+      null,
+    )
+  })
+
+  test('an unreadable balance never produces a funding claim', async () => {
+    // null means "could not read". Treating it as zero would tell a user with
+    // money to go fund a wallet that is already funded.
+    const { nextStep } = await import('../src/multi/status.ts')
+    for (const u of [base, { ...base, withdrawalAddress: '0xW' }]) {
+      const out = nextStep(u, null)
+      assert.doesNotMatch(out ?? '', /Fund this wallet/, JSON.stringify(u))
+      assert.doesNotMatch(out ?? '', /applies instantly/, JSON.stringify(u))
+    }
+  })
+
+  test('a pending address change counts as set', async () => {
+    // Otherwise a user who just requested one is nagged for 24 hours.
+    const { nextStep } = await import('../src/multi/status.ts')
+    const out = nextStep(
+      { ...base, pendingWithdrawalAddress: '0xW', tokenAddress: '0xToken', armed: true },
+      '50.0',
+    )
+    assert.equal(out, null)
   })
 })

@@ -117,6 +117,51 @@ export function escapeHtml(s: string): string {
   return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
 }
 
+/**
+ * The single most useful thing this user could do next.
+ *
+ * Structural input rather than StoredUser so it stays a pure function of the
+ * facts it actually reads, and can be tested without a registry. `usdc` is the
+ * Base balance as a decimal string, or null when it could not be read - null
+ * must never be treated as zero, or the hints start asserting things about
+ * funding that nobody verified.
+ */
+export interface NextStepFacts {
+  frozen: boolean
+  withdrawalAddress: string | null
+  pendingWithdrawalAddress: string | null
+  tokenAddress: string | null
+  armed: boolean
+}
+
+export function nextStep(u: NextStepFacts, usdc: string | null): string | null {
+  if (u.frozen) return 'Your account is frozen. Ask the operator to unfreeze it.'
+
+  const noWithdrawAddress = !u.withdrawalAddress && !u.pendingWithdrawalAddress
+  // Only claim anything about funding when the balance was actually read.
+  const empty = usdc !== null && Number(usdc) === 0
+
+  // While the wallet is empty there is a closing window worth flagging above
+  // everything else: the first withdrawal address applies instantly, and the
+  // moment funds land the same change costs 24 hours.
+  //
+  // Once funded that urgency is gone, so the hint drops BELOW arming. Missing
+  // the launch you armed for is the bigger loss, and an unset address blocks
+  // withdrawing, not trading. Getting this order wrong told a funded user to
+  // set an address "while the wallet is empty - it applies instantly" when it
+  // would in fact have been time-locked for a day.
+  if (noWithdrawAddress && empty) {
+    return 'Set a withdrawal address (Wallets). Do it now while the wallet is empty - it applies instantly; once there are funds in it the same change takes 24 hours.'
+  }
+  if (empty) return 'Fund this wallet: send USDC on Base to the address above.'
+  if (!u.tokenAddress) return 'Set the token you want to buy (Target).'
+  if (!u.armed) return 'Arm your target (Target) so the buy fires at launch.'
+  if (noWithdrawAddress) {
+    return 'Set a withdrawal address (Wallets) so you can get funds out. Your wallet already holds funds, so the change will be time-locked for 24 hours.'
+  }
+  return null
+}
+
 /** "3m ago" style rendering for a timestamp. */
 export function ago(ms: number, nowMs = Date.now()): string {
   const s = Math.max(0, Math.round((nowMs - ms) / 1000))
