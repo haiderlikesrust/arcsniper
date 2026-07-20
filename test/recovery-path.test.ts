@@ -184,9 +184,10 @@ describe('the orchestrator consults the guard before it can burn', () => {
   const resumeBody = () => bodyOf('private async resumePendingBridge(', 'private async bridgeForUser(')
 
   test('bridgeForUser resumes before reading any balance or burning', () => {
-    const i = src.indexOf('private async bridgeForUser(')
-    assert.ok(i > 0, 'bridgeForUser not found')
-    const body = src.slice(i, i + 1500)
+    // Bounded by the next method, not a char count: a fixed window silently
+    // stopped covering the burn call when git normalised line endings to CRLF
+    // and every offset grew by a few percent.
+    const body = bodyOf('private async bridgeForUser(', 'private async waitForArcCredit(')
     const guard = body.indexOf('resumePendingBridge')
     const balance = body.indexOf('balanceOf')
     const burn = body.indexOf('await bridge(')
