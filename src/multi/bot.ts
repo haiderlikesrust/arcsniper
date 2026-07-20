@@ -8,6 +8,7 @@ import { audit } from './audit.js'
 import { isAllowed, isAdmin, denyAccess, looksLikeSecret, RateLimiter, type TelegramConfig } from './auth.js'
 import { activeWallet, UserRegistry, type StoredUser, type StoredWallet } from './users.js'
 import { withdrawAll } from './withdraw.js'
+import { loadPending, userPendingPath } from '../bridge/recovery.js'
 import { TicketStore, stateHash } from './tickets.js'
 import { StatusBoard, phaseLabel, phaseProgress, ago, escapeMd } from './status.js'
 
@@ -258,6 +259,22 @@ export function createBot(token: string, deps: BotDeps): Bot {
         (mine.txHash ? `\nTx: \`${mine.txHash}\`` : '')
     } else if (user.armed) {
       out += `\n\nYour order: *${phaseLabel('armed')}*\n\`${phaseProgress('armed')}\``
+    }
+
+    // The status board above is in-memory, so a restart wipes it. The
+    // pending-bridge record on disk is the durable truth - read it so an
+    // in-flight transfer is still visible after the bot comes back up.
+    // Without this, restarting mid-bridge shows a menu that looks idle while
+    // real money is between two chains.
+    const pending = loadPending(userPendingPath(user.telegramId))
+    if (pending?.burnTxHash) {
+      out +=
+        `\n\n*BRIDGE IN FLIGHT*\n` +
+        `${pending.amountUsdc} USDC burned on Base, awaiting mint on Arc.\n` +
+        `Tx: \`${pending.burnTxHash}\`\n` +
+        `Submitted: ${ago(Date.parse(pending.submittedAtIso))}\n` +
+        `_Recorded on disk, so this survives restarts. The funds are recoverable ` +
+        `even if the mint stalled - the operator can finish it with_ \`arcbot claim\`.`
     }
 
     return out

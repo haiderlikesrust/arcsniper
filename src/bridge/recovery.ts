@@ -1,4 +1,4 @@
-import { writeFileSync, readFileSync, existsSync, mkdirSync, unlinkSync } from 'node:fs'
+import { writeFileSync, readFileSync, existsSync, mkdirSync, unlinkSync, readdirSync } from 'node:fs'
 import { dirname, resolve } from 'node:path'
 import { log } from '../log.js'
 
@@ -38,6 +38,38 @@ export interface PendingTransfer {
 // the filesystem is read-only in production). Callers normally pass a per-user
 // path; this default is only a fallback.
 export const DEFAULT_STATE_PATH = resolve(process.cwd(), 'data', 'pending', 'pending-bridge.json')
+
+/**
+ * Per-user pending-bridge record. Shared by the orchestrator (writes) and the
+ * Telegram menu (reads), so a restart does not lose track of an in-flight
+ * transfer - this file is the durable truth, the in-memory status board is not.
+ */
+export function userPendingPath(telegramId: number): string {
+  return resolve(process.cwd(), 'data', 'pending', `pending-${telegramId}.json`)
+}
+
+/**
+ * Every telegram id with a pending-bridge record on disk.
+ *
+ * Scans the directory rather than deriving ids from the user registry, so a
+ * record whose user record is missing or unreadable still shows up - that is
+ * precisely the case worth shouting about, since it means a burn happened and
+ * nothing is tracking it.
+ */
+export function listPendingUserIds(): number[] {
+  const dir = resolve(process.cwd(), 'data', 'pending')
+  if (!existsSync(dir)) return []
+  try {
+    return readdirSync(dir)
+      .map((f) => /^pending-(\d+)\.json$/.exec(f)?.[1])
+      .filter((v): v is string => Boolean(v))
+      .map(Number)
+      .filter((n) => Number.isSafeInteger(n))
+  } catch (err) {
+    log.error({ err: (err as Error).message }, 'could not scan the pending-bridge directory')
+    return []
+  }
+}
 
 export function savePending(t: PendingTransfer, path = DEFAULT_STATE_PATH): void {
   mkdirSync(dirname(path), { recursive: true })

@@ -48,6 +48,48 @@ describe('per-user recovery isolation', () => {
     assert.equal(loadPending(pathB)!.burnTxHash, '0xBBB', 'other user untouched')
   })
 
+  test('pending records are discoverable after a restart', async () => {
+    // The in-memory status board is wiped by a restart. The record on disk is
+    // the durable truth - if it cannot be found, a restart mid-bridge leaves
+    // the bot looking idle while real money is between two chains.
+    const cwd = process.cwd()
+    try {
+      const dir = mkdtempSync(join(tmpdir(), 'arcbot-scan-'))
+      process.chdir(dir)
+      const { userPendingPath, listPendingUserIds, savePending: save } = await import(
+        '../src/bridge/recovery.ts?' + Math.random()
+      )
+
+      assert.deepEqual(listPendingUserIds(), [], 'nothing pending on a clean start')
+
+      save(make('0xAAA'), userPendingPath(111))
+      save(make('0xBBB'), userPendingPath(222))
+
+      const found = listPendingUserIds().sort((a: number, b: number) => a - b)
+      assert.deepEqual(found, [111, 222], 'both in-flight bridges must be discoverable')
+    } finally {
+      process.chdir(cwd)
+    }
+  })
+
+  test('the scan ignores unrelated files', async () => {
+    const cwd = process.cwd()
+    try {
+      const dir = mkdtempSync(join(tmpdir(), 'arcbot-scan2-'))
+      process.chdir(dir)
+      const { userPendingPath, listPendingUserIds, savePending: save } = await import(
+        '../src/bridge/recovery.ts?' + Math.random()
+      )
+      save(make('0xAAA'), userPendingPath(333))
+      // The legacy global fallback file has no user id and must not parse as one.
+      save(make('0xCCC'), join(dir, 'data', 'pending', 'pending-bridge.json'))
+
+      assert.deepEqual(listPendingUserIds(), [333])
+    } finally {
+      process.chdir(cwd)
+    }
+  })
+
   test('the record on disk never contains key material', () => {
     const dir = mkdtempSync(join(tmpdir(), 'arcbot-rec3-'))
     const path = join(dir, 'pending-1.json')

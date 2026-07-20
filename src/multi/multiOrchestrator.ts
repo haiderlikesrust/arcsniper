@@ -8,7 +8,7 @@ import { bridge, ensureApproval, claimOnDestination } from '../bridge/cctp.js'
 import { buy } from '../trade/router.js'
 import { erc20Abi } from '../abi.js'
 import { audit } from './audit.js'
-import { savePending, loadPending, clearPending, printRecoveryInstructions } from '../bridge/recovery.js'
+import { savePending, loadPending, clearPending, printRecoveryInstructions, userPendingPath, listPendingUserIds } from '../bridge/recovery.js'
 import { UserRegistry, type StoredUser } from './users.js'
 import { StatusBoard } from './status.js'
 
@@ -60,7 +60,53 @@ export class MultiOrchestrator {
    * a burn survives a container restart and `claim` can complete it.
    */
   private recoveryPath(telegramId: number): string {
-    return resolve(process.cwd(), 'data', 'pending', `pending-${telegramId}.json`)
+    return userPendingPath(telegramId)
+  }
+
+  /**
+   * On startup, surface any bridge that was in flight when the process died.
+   *
+   * The pending record is written before the burn is submitted, so a crash or a
+   * `docker compose down` mid-transfer leaves a file behind. Without this the
+   * bot would come back up looking idle while real money sat between two
+   * chains - the user would have no idea anything was outstanding.
+   */
+  private reportPendingBridges(): void {
+    // Scan the directory rather than iterating registered users: a record whose
+    // user is missing or unreadable is exactly the case that most needs
+    // surfacing, and iterating the registry would hide it.
+    for (const id of listPendingUserIds()) {
+      const pending = loadPending(this.recoveryPath(id))
+      if (!pending?.burnTxHash) continue
+
+      if (!this.opts.registry.get(id)) {
+        log.error(
+          { telegramId: id, burnTx: pending.burnTxHash, amount: pending.amountUsdc },
+          'ORPHANED BRIDGE: a burn is recorded for a user with no wallet record - investigate before it is lost',
+        )
+        continue
+      }
+
+      log.warn(
+        { telegramId: id, burnTx: pending.burnTxHash, amount: pending.amountUsdc },
+        'BRIDGE IN FLIGHT from a previous run - funds burned on Base, mint not confirmed',
+      )
+      // Restore the in-memory phase so /menu shows it immediately, not just
+      // after the durable-record fallback.
+      this.opts.status.setUser(
+        id,
+        'awaiting_mint',
+        `Recovered after restart - burn from ${pending.submittedAtIso}`,
+        pending.burnTxHash,
+      )
+      void this.safeNotify(
+        id,
+        `The bot restarted while your bridge was in flight.\n\n` +
+          `${pending.amountUsdc} USDC was burned on Base.\nTx: ${pending.burnTxHash}\n\n` +
+          `This is recorded on disk and the funds are recoverable. Open /menu to see ` +
+          `the current state; if the mint did not complete, the operator can finish it.`,
+      )
+    }
   }
 
   async start(): Promise<void> {
@@ -68,6 +114,9 @@ export class MultiOrchestrator {
       { mode: this.opts.dryRun ? 'DRY RUN' : 'LIVE', concurrency: this.concurrency },
       'multi-user orchestrator starting',
     )
+
+    // A restart must not silently abandon money that is mid-transfer.
+    this.reportPendingBridges()
 
     // Pre-arm every user who is (or later becomes) armed. Doing approvals while
     // idle removes a confirmation round-trip from each user's critical path.
