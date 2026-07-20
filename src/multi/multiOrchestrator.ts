@@ -209,7 +209,10 @@ export class MultiOrchestrator {
       const msg = (err as Error).message
       this.opts.status.setUser(id, 'failed', msg.slice(0, 200))
       log.error({ telegramId: id, err: msg }, 'user run failed')
-      await this.safeNotify(id, `Your order failed: ${msg}\n\nYour funds are safe. Use /status to check, or /withdraw.`)
+      await this.safeNotify(
+        id,
+        `Your order failed: ${msg}\n\nYour funds are safe. Open /menu to see exactly which step it stopped at.`,
+      )
     }
   }
 
@@ -285,6 +288,17 @@ export class MultiOrchestrator {
     }
 
     this.opts.status.setUser(id, 'awaiting_mint', 'Burn confirmed - waiting for Circle to mint on Arc', result.burnTxHash)
+
+    // Push the burn hash rather than only writing it to the menu. This is the
+    // tensest moment of the whole run - the USDC has left Base and has not
+    // arrived on Arc yet - and it is exactly when the user wants proof in hand
+    // rather than having to go looking for it.
+    await this.safeNotify(
+      id,
+      `Burn confirmed on Base.\nTx: ${result.burnTxHash}\n\n` +
+        `Waiting for Circle to mint on Arc (usually seconds). ` +
+        `Your funds are recorded and recoverable even if this step stalls.`,
+    )
     await this.waitForArcCredit(id, account.address, balanceBeforeArc)
     // Funds confirmed on Arc - the pending record has served its purpose.
     clearPending(this.recoveryPath(id))
@@ -329,7 +343,12 @@ export class MultiOrchestrator {
     // A bridge can take minutes. Re-check frozen/armed here so a /panic (or
     // /disarm) that landed DURING the bridge still vetoes the buy.
     if (latest.frozen || !latest.armed) {
-      await this.safeNotify(id, 'Buy skipped - account was frozen or disarmed. Your bridged USDC is on Arc; /withdraw or re-/arm.')
+      await this.safeNotify(
+        id,
+        'Buy skipped - your account was frozen or disarmed while the bridge was in flight.\n\n' +
+          'Your USDC is on Arc and safe. Re-arm to use it. (The Withdraw button only ' +
+          "covers Base; to move funds off Arc, export the wallet's key from the Wallets menu.)",
+      )
       return
     }
 
@@ -383,7 +402,9 @@ export class MultiOrchestrator {
       await this.safeNotify(
         id,
         `Buy REFUSED by safety checks - no funds spent:\n- ${result.report.vetoes.join('\n- ')}\n\n` +
-          `Your USDC is on Arc. Fix the target and /arm again, or /withdraw.`,
+          `Your USDC is on Arc and safe. Fix the target and arm again to use it.\n\n` +
+          `Note: the Withdraw button only covers Base. To move funds off Arc, export ` +
+          `this wallet's key from the Wallets menu and use it directly.`,
       )
     }
   }
