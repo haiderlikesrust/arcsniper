@@ -71,6 +71,45 @@ export function listPendingUserIds(): number[] {
   }
 }
 
+/**
+ * What to do about a pending record found at the start of a run.
+ *
+ * Extracted from the orchestrator because this is the decision that stops a
+ * restart from burning twice, and it is worth being able to test on its own
+ * rather than only through a live chain client.
+ */
+export type ResumeDecision =
+  | { kind: 'no-pending' }
+  | { kind: 'resume'; pending: PendingTransfer & { burnTxHash: string } }
+  | { kind: 'refuse'; reason: string }
+
+/**
+ * Decide whether an in-flight transfer can be picked back up.
+ *
+ * The rule that matters: anything other than `no-pending` must prevent a fresh
+ * burn. A record with no burn hash means the process died BEFORE submitting, so
+ * nothing was destroyed on the source chain and bridging normally is safe.
+ * Anything with a burn hash means USDC is already gone from Base, and sending
+ * more would be a straight double-spend.
+ */
+export function decideResume(pending: PendingTransfer | null, activeAddress: string): ResumeDecision {
+  if (!pending?.burnTxHash) return { kind: 'no-pending' }
+
+  // The mint recipient is encoded in the burn message and cannot be retargeted.
+  // Resuming against a different active wallet would mint to the old address
+  // while the buy ran from the new one.
+  if (pending.recipient.toLowerCase() !== activeAddress.toLowerCase()) {
+    return {
+      kind: 'refuse',
+      reason:
+        `a bridge is in flight to ${pending.recipient}, which is not your active wallet. ` +
+        `Burn ${pending.burnTxHash} must be claimed manually before you arm again.`,
+    }
+  }
+
+  return { kind: 'resume', pending: pending as PendingTransfer & { burnTxHash: string } }
+}
+
 export function savePending(t: PendingTransfer, path = DEFAULT_STATE_PATH): void {
   mkdirSync(dirname(path), { recursive: true })
   writeFileSync(path, JSON.stringify(t, null, 2), { mode: 0o600 })
