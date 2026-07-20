@@ -116,6 +116,40 @@ describe('bridge readiness (CCTP on-chain detection)', () => {
   )
 })
 
+describe('pinned Arc mainnet chain id', () => {
+  // 5042 is registered in ethereum-lists/chains as "Arc" / arc-mainnet with the
+  // same infoURL as the 5042002 testnet entry. Its rpc[] is empty because the
+  // id is reserved ahead of launch. Pinning it makes detection strict.
+  test('config pins 5042 and uses 18-decimal native currency', async () => {
+    const { loadNetworks } = await import('../src/config.ts')
+    const cfg = loadNetworks()
+    assert.equal(cfg.destination.chainId, 5042, 'Arc mainnet chain id must be pinned')
+    // Native gas on an EVM chain is 18 decimals even though Arc calls it USDC.
+    // The ERC20 USDC contract remains 6 - mixing them is a 10^12 error.
+    assert.equal(cfg.destination.nativeCurrency.decimals, 18)
+  })
+
+  test('only 5042 is accepted; everything else is rejected', async () => {
+    const { loadNetworks } = await import('../src/config.ts')
+    const cfg = loadNetworks()
+    const pinned = cfg.destination.chainId
+    const wrong = cfg.destination.knownWrongChainIds
+
+    const rejected = (id: number): string | null => {
+      const hit = wrong[String(id)]
+      if (hit) return hit
+      if (pinned !== null && id !== pinned) return `does not match pinned chainId ${pinned}`
+      return null
+    }
+
+    assert.equal(rejected(5042), null, 'Arc mainnet must be accepted')
+    assert.match(rejected(5042002) ?? '', /testnet/, 'testnet must be rejected')
+    assert.match(rejected(1243) ?? '', /Unrelated/, 'the other ARC chain must be rejected')
+    assert.match(rejected(8453) ?? '', /does not match pinned/, 'Base must be rejected')
+    assert.match(rejected(9999) ?? '', /does not match pinned/)
+  })
+})
+
 describe('chain rejection rules', () => {
   // Mirrors LaunchDetector.isRejectedChainId. These are the two chain IDs that
   // must never be mistaken for Arc mainnet.

@@ -20,8 +20,8 @@
 
   "destination": {
     "name": "Arc",
-    "chainIdKnown": false,
-    "chainId": null,
+    "chainIdKnown": true,
+    "chainId": 5042,
     "knownWrongChainIds": {
       "$comment": "Guard rails. Detection MUST reject these.",
       "5042002": "Arc public testnet — not mainnet",
@@ -38,6 +38,18 @@
       "expected to deploy at the same addresses. The bot verifies bytecode and",
       "localDomain() before trusting them, so a wrong guess fails safe."
     ],
+    "$chainIdComment": [
+      "5042 is Arc mainnet, registered in the ethereum-lists/chains registry as",
+      "'Arc' / shortName 'arc-mainnet' with infoURL https://arc.network - the same",
+      "project as the 5042002 testnet entry. Verified 2026-07-19.",
+      "",
+      "The registry entry has an EMPTY rpc[] and explorers[] list: the id is",
+      "reserved ahead of launch, the network is not switched on yet.",
+      "",
+      "Pinning it here makes detection strict - the bot will now accept ONLY",
+      "chain 5042 as Arc mainnet and reject anything else, instead of trusting",
+      "whatever a candidate RPC claims to be."
+    ],
     "cctpDomain": null,
     "testnetCctpDomain": 26,
     "usdc": null,
@@ -52,10 +64,17 @@
     ],
 
     "nativeCurrency": {
-      "$comment": "Arc uses USDC as native gas. 6 decimals, not 18 — this is unusual and easy to get wrong.",
+      "$comment": [
+        "Arc uses USDC as its native gas token, but the NATIVE unit is 18 decimals",
+        "like any EVM chain - not 6. Confirmed against the ethereum-lists registry",
+        "for both 5042 (mainnet) and 5042002 (testnet, which is live).",
+        "",
+        "The ERC20 USDC contract is still 6 decimals. Do not mix them up: native",
+        "gas balances use 18, token balances use 6."
+      ],
       "name": "USD Coin",
       "symbol": "USDC",
-      "decimals": 6
+      "decimals": 18
     },
 
     "explorerCandidates": ["https://arcscan.app", "https://explorer.arc.network"]

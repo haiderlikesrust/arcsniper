@@ -9,6 +9,7 @@ import {
   type PrivateKeyAccount,
   type Chain,
 } from 'viem'
+import { formatEther } from 'viem'
 import { erc20Abi, tokenMessengerV2Abi, messageTransmitterV2Abi } from '../abi.js'
 import { log, stopwatch } from '../log.js'
 import { formatUsdc, type NetworksConfig } from '../config.js'
@@ -146,7 +147,9 @@ export async function checkDirectClaimPath(
         `or pre-fund this address with a small USDC gas float on Arc.`
       )
     }
-    log.info({ balance: formatUsdc(balance) }, 'destination gas balance present; direct claim viable')
+    // NATIVE balance is 18-decimal on Arc (formatUsdc is for the 6-decimal
+    // ERC20). Format with formatEther so the log is not off by 10^12.
+    log.info({ nativeBalance: formatEther(balance) }, 'destination gas balance present; direct claim viable')
     return null
   } catch (err) {
     return `could not verify destination gas balance: ${(err as Error).message}`
