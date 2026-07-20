@@ -917,3 +917,43 @@ describe('bridge-only mode', () => {
     assert.match(orch.slice(orch.indexOf('if (!latest.tokenAddress)'), orch.indexOf('if (!latest.tokenAddress)') + 900), /only covers Base/)
   })
 })
+
+describe('progress bar', () => {
+  // A bridge-only run never reaches the buy stage. Counting it made the bar
+  // promise a step that could not happen - the run went 4/6 straight to 6/6,
+  // visibly skipping 5.
+  test('bridge-only drops the buy step from the count', async () => {
+    const { phaseProgress } = await import('../src/multi/status.ts')
+    assert.match(phaseProgress('armed', true), /1\/5$/)
+    assert.match(phaseProgress('armed', false), /1\/6$/)
+  })
+
+  test('a bridge-only run ends on its last step, not a skipped one', async () => {
+    const { phaseProgress } = await import('../src/multi/status.ts')
+    assert.match(phaseProgress('bridged', true), /4\/5$/)
+    assert.match(phaseProgress('done', true), /5\/5$/, 'done must be the final step, with no gap before it')
+  })
+
+  test('the full pipeline still counts six', async () => {
+    const { phaseProgress } = await import('../src/multi/status.ts')
+    assert.match(phaseProgress('bridged', false), /4\/6$/)
+    assert.match(phaseProgress('buying', false), /5\/6$/)
+    assert.match(phaseProgress('done', false), /6\/6$/)
+  })
+
+  test('every step is filled by the time the run is done', async () => {
+    const { phaseProgress } = await import('../src/multi/status.ts')
+    for (const only of [true, false]) {
+      const bar = phaseProgress('done', only).split(' ')[0]!
+      assert.ok(!bar.includes('▱'), `unfilled block at completion (bridgeOnly=${only}): ${bar}`)
+    }
+  })
+
+  test('a stopped run does not render a misleading count', async () => {
+    const { phaseProgress } = await import('../src/multi/status.ts')
+    for (const p of ['failed', 'vetoed'] as const) {
+      assert.equal(phaseProgress(p, true), '[!] stopped')
+      assert.equal(phaseProgress(p, false), '[!] stopped')
+    }
+  })
+})

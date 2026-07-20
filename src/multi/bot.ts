@@ -343,15 +343,20 @@ export function createBot(token: string, deps: BotDeps): Bot {
       out += `Arc mainnet: <b>LIVE</b> (chain ${g.chainId})\nBridge: <b>ready</b> (CCTP domain ${g.cctpDomain})`
     }
 
+    // No target means the buy stage never runs, so it must not be counted.
+    const bridgeOnly = !user.tokenAddress
+
     if (mine && mine.phase !== 'idle') {
-      const bar = phaseProgress(mine.phase)
+      const bar = phaseProgress(mine.phase, bridgeOnly)
       out +=
         `\n\nYour order: <b>${escapeHtml(phaseLabel(mine.phase))}</b>` +
         (bar ? `\n<code>${bar}</code>` : '') +
         `\n<i>${escapeHtml(mine.detail)}</i> (${ago(mine.updatedAt)})` +
         (mine.txHash ? `\nTx: <code>${escapeHtml(mine.txHash)}</code>` : '')
     } else if (user.armed) {
-      out += `\n\nYour order: <b>${escapeHtml(phaseLabel('armed'))}</b>\n<code>${phaseProgress('armed')}</code>`
+      out +=
+        `\n\nYour order: <b>${escapeHtml(phaseLabel('armed'))}${bridgeOnly ? ' (bridge only)' : ''}</b>` +
+        `\n<code>${phaseProgress('armed', bridgeOnly)}</code>`
     }
 
     // The status board above is in-memory, so a restart wipes it. The

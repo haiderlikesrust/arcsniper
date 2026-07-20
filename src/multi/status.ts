@@ -56,9 +56,17 @@ export function phaseLabel(p: UserPhase): string {
   return PHASE_LABEL[p]
 }
 
-/** Progress bar for the launch pipeline, so the step is obvious at a glance. */
-export function phaseProgress(p: UserPhase): string {
-  const steps: UserPhase[] = ['armed', 'bridging', 'awaiting_mint', 'bridged', 'buying', 'done']
+/**
+ * Progress bar for the launch pipeline, so the step is obvious at a glance.
+ *
+ * `bridgeOnly` drops the buy step. A user who armed with no target never runs
+ * it, so counting it made the bar promise a step that could not happen: the
+ * run went 4/6 straight to 6/6, visibly skipping 5.
+ */
+export function phaseProgress(p: UserPhase, bridgeOnly = false): string {
+  const steps: UserPhase[] = bridgeOnly
+    ? ['armed', 'bridging', 'awaiting_mint', 'bridged', 'done']
+    : ['armed', 'bridging', 'awaiting_mint', 'bridged', 'buying', 'done']
   const i = steps.indexOf(p)
   if (p === 'failed' || p === 'vetoed') return '[!] stopped'
   if (i < 0) return ''
