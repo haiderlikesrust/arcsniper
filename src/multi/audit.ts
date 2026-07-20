@@ -29,6 +29,10 @@ export type AuditAction =
   | 'target.armed'
   | 'target.disarmed'
   | 'bridge.submitted'
+  // A burn from a previous process, picked back up after a restart. Logged
+  // before the record on disk is touched, so the burn hash survives in the
+  // audit trail even if the pending file is later cleared.
+  | 'bridge.resumed'
   | 'bridge.completed'
   | 'buy.vetoed'
   | 'buy.executed'

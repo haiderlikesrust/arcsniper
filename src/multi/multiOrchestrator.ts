@@ -5,10 +5,11 @@ import { formatUsdc, parseUsdc, type NetworksConfig } from '../config.js'
 import { defineArcChain, makeClient, makeSourceClient, base } from '../chains.js'
 import { LaunchDetector, type ChainLiveEvidence, type BridgeReadyEvidence } from '../watch/detector.js'
 import { bridge, ensureApproval, claimOnDestination } from '../bridge/cctp.js'
+import { waitForAttestation } from '../bridge/iris.js'
 import { buy } from '../trade/router.js'
 import { erc20Abi } from '../abi.js'
 import { audit } from './audit.js'
-import { savePending, loadPending, clearPending, printRecoveryInstructions, userPendingPath, listPendingUserIds } from '../bridge/recovery.js'
+import { savePending, loadPending, clearPending, printRecoveryInstructions, userPendingPath, listPendingUserIds, decideResume } from '../bridge/recovery.js'
 import { UserRegistry, type StoredUser } from './users.js'
 import { StatusBoard } from './status.js'
 
@@ -265,8 +266,139 @@ export class MultiOrchestrator {
     }
   }
 
+  /** Arc native balance (USDC is the gas token there), 0n if unreadable. */
+  private async arcBalance(address: Address): Promise<bigint> {
+    try {
+      return await this.arcClient!.getBalance({ address })
+    } catch {
+      return 0n
+    }
+  }
+
+  /**
+   * Resolve a bridge that was still in flight when a previous process died.
+   *
+   * This is the guard that makes a restart safe, and it is load-bearing.
+   * `armed` stays true until a successful buy, and `runState` is in-memory - so
+   * after a restart the detector re-fires and every armed user runs again,
+   * including one whose USDC is already burned and mid-flight. Without this,
+   * bridgeForUser would check only the Base balance, burn a SECOND time, and
+   * savePending would overwrite the first burn's tx hash with the second's -
+   * destroying the one piece of data `arcbot claim` needs to recover it.
+   *
+   * Returns true when the funds are confirmed on Arc and the caller should skip
+   * bridging entirely and go straight to the buy. Throws when the transfer
+   * cannot be resolved, which is deliberate: the one outcome that must never
+   * happen here is falling through to a second burn.
+   */
+  private async resumePendingBridge(user: StoredUser): Promise<boolean> {
+    if (this.opts.dryRun) return false
+
+    const id = user.telegramId
+    const path = this.recoveryPath(id)
+    const account = await this.opts.registry.unlock(id)
+
+    const decision = decideResume(loadPending(path), account.address)
+    // No record, or one written before the burn was submitted: nothing was
+    // destroyed on Base, so a normal bridge is safe.
+    if (decision.kind === 'no-pending') return false
+    if (decision.kind === 'refuse') throw new Error(decision.reason)
+
+    const pending = decision.pending
+    const amount = parseUsdc(pending.amountUsdc)
+    log.warn(
+      { telegramId: id, burnTx: pending.burnTxHash, amount: pending.amountUsdc },
+      'resuming a bridge from a previous run - NOT bridging again',
+    )
+    // Audit before anything else. If the record on disk is later cleared, this
+    // is what still ties the user to the burn hash.
+    audit('bridge.resumed', id, { burnTx: pending.burnTxHash, amount: pending.amountUsdc, route: pending.route })
+    this.opts.status.setUser(id, 'awaiting_mint', 'Resuming the bridge from before the restart', pending.burnTxHash)
+    await this.safeNotify(
+      id,
+      `Picking your bridge back up after the restart.\n\n` +
+        `${pending.amountUsdc} USDC was already burned on Base, so I will NOT send it again.\n` +
+        `Tx: ${pending.burnTxHash}\n\nCompleting the mint on Arc now.`,
+    )
+
+    const before = await this.arcBalance(account.address)
+
+    // The mint may already have landed while we were down - Circle relays the
+    // forwarding route itself, and the operator may have run `claim`. Checking
+    // first matters: waitForArcCredit looks for an INCREASE, so a mint that
+    // already settled would otherwise sit waiting for a credit that never comes
+    // and time out after five minutes.
+    if (before >= amount) {
+      log.warn({ telegramId: id, burnTx: pending.burnTxHash }, 'mint already landed while the bot was down')
+      clearPending(path)
+      this.opts.status.setUser(id, 'bridged', 'Funds already on Arc (minted while the bot was down)')
+      await this.safeNotify(id, 'Your bridged funds were already on Arc. Continuing to the buy.')
+      return true
+    }
+
+    // Direct route: we owe the destination a receiveMessage. Forwarding route:
+    // Circle submits it, so there is nothing to send - only wait.
+    if (pending.route === 'direct') {
+      const transmitter = this.opts.networks.destination.messageTransmitterV2
+      if (!transmitter) {
+        throw new Error('an in-flight direct-route burn exists but messageTransmitterV2 is unset - claim manually')
+      }
+      // Prefer the proof cached at burn time; it works even if Iris is down.
+      const proof =
+        pending.attestation ??
+        (await waitForAttestation(
+          this.opts.networks.cctp.irisApiBase,
+          pending.sourceDomain,
+          pending.burnTxHash,
+          {
+            pollIntervalMs: this.opts.networks.cctp.attestationPollIntervalMs,
+            timeoutMs: this.opts.networks.cctp.attestationTimeoutMs,
+          },
+        ))
+
+      try {
+        await claimOnDestination(
+          this.arcChain!,
+          this.arcRpcUrl!,
+          account,
+          transmitter,
+          proof.message as `0x${string}`,
+          proof.attestation as `0x${string}`,
+          false,
+        )
+      } catch (err) {
+        // A used nonce reverts, which is what an already-completed mint looks
+        // like. Only accept that reading if the balance backs it up; otherwise
+        // this stays unresolved and the record survives for `arcbot claim`.
+        if ((await this.arcBalance(account.address)) < amount) {
+          printRecoveryInstructions(pending, path)
+          throw new Error(
+            `could not complete the mint for burn ${pending.burnTxHash}: ${(err as Error).message}. ` +
+              `Your funds are recorded and claimable - nothing was sent twice.`,
+          )
+        }
+        log.warn(
+          { telegramId: id, err: (err as Error).message },
+          'mint reverted but the balance shows it already landed',
+        )
+      }
+    }
+
+    await this.waitForArcCredit(id, account.address, before)
+    clearPending(path)
+    audit('bridge.completed', id, { amount: pending.amountUsdc, resumed: true })
+    this.opts.status.setUser(id, 'bridged', 'Funds confirmed on Arc (resumed after restart)')
+    await this.safeNotify(id, 'Your bridged funds are confirmed on Arc. Continuing to the buy.')
+    return true
+  }
+
   private async bridgeForUser(user: StoredUser): Promise<void> {
     const id = user.telegramId
+
+    // Must come before ANY balance check or burn. A burn already in flight is
+    // resolved or refused here; it never falls through to a second one.
+    if (await this.resumePendingBridge(user)) return
+
     const sourceClient = makeSourceClient(this.opts.networks)
     const account = await this.opts.registry.unlock(id)
     const amount = parseUsdc(user.bridgeUsdc)
