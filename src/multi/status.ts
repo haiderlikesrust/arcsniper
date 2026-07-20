@@ -62,7 +62,7 @@ export function phaseProgress(p: UserPhase): string {
   const i = steps.indexOf(p)
   if (p === 'failed' || p === 'vetoed') return '[!] stopped'
   if (i < 0) return ''
-  return steps.map((_, n) => (n <= i ? '#' : '.')).join('') + ` ${i + 1}/${steps.length}`
+  return steps.map((_, n) => (n <= i ? '▰' : '▱')).join('') + ` ${i + 1}/${steps.length}`
 }
 
 export class StatusBoard {
@@ -96,19 +96,25 @@ export class StatusBoard {
 }
 
 /**
- * Escape text for Telegram's legacy Markdown parser.
+ * Escape text for Telegram's HTML parser.
  *
- * Any dynamic string interpolated into a parse_mode:'Markdown' message MUST go
- * through this. Unbalanced `_ * ` [` makes Telegram reject the whole message
- * with a 400, and since the retry path sends the same text it fails again -
- * the result is a menu that silently never renders.
+ * Any dynamic string interpolated into a parse_mode:'HTML' message MUST go
+ * through this. Real sources of hostile characters: ERC20 symbols chosen by
+ * whoever deployed the token, EVM revert strings, viem error messages, URLs,
+ * and operator-supplied wallet labels.
  *
- * Real sources of these characters: ERC20 symbols chosen by whoever deployed
- * the token (`SAFE_MOON`), EVM revert strings, viem error messages, URLs, and
- * operator-supplied wallet labels.
+ * HTML rather than Markdown deliberately. Telegram's legacy Markdown cannot
+ * express an escaped backtick INSIDE a code span, so a wallet label or revert
+ * string containing one made the whole message unparseable - Telegram 400s,
+ * the retry re-sends the same broken text, and the menu silently never
+ * renders. HTML has exactly three special characters and they are escapable
+ * everywhere, including inside <code>, so that failure mode cannot occur.
+ *
+ * `&` must be replaced first or it would double-escape the entities emitted
+ * by the two replacements after it.
  */
-export function escapeMd(s: string): string {
-  return s.replace(/([_*`[\]])/g, '\\$1')
+export function escapeHtml(s: string): string {
+  return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
 }
 
 /** "3m ago" style rendering for a timestamp. */

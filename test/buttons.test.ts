@@ -306,53 +306,268 @@ describe('bridge/spend gas reserve', () => {
   })
 
   test('the settings screen separates bridged / spent / unspent', () => {
-    assert.match(src, /_\(moved to Arc\)_/)
-    assert.match(src, /_\(buys the token\)_/)
-    assert.match(src, /_\(stays in your wallet\)_/)
+    assert.match(src, /<i>\(moved to Arc\)<\/i>/)
+    assert.match(src, /<i>\(buys the token\)<\/i>/)
+    assert.match(src, /<i>\(stays in your wallet\)<\/i>/)
+  })
+
+  test('the presets and the typed path share one validator', () => {
+    // Two implementations of the cap and reserve rules would drift, and the
+    // drift would show up as a preset button that skips a cap.
+    const uses = [...src.matchAll(/applyAmount\(/g)]
+    assert.ok(uses.length >= 3, `expected one definition and both call sites; found ${uses.length}`)
+    assert.match(src, /function applyAmount\(/)
+    assert.match(src, /const result = applyAmount\(user, field, String\(tk\.plan\.value\)\)/, 'preset path')
+    assert.match(src, /const result = applyAmount\(user, pending\.field, raw\)/, 'typed path')
   })
 })
 
-describe('markdown escaping', () => {
-  // A token symbol or error message containing _ * ` [ made rootText
+describe('html escaping', () => {
+  // A token symbol or revert string containing markup made rootText
   // unparseable. editMessageText 400s, the retry re-sends the same broken text,
   // the error is swallowed - and the menu silently never renders again.
-  test('escapes every Telegram Markdown control character', async () => {
-    const { escapeMd } = await import('../src/multi/status.ts')
-    assert.equal(escapeMd('SAFE_MOON'), 'SAFE\\_MOON')
-    assert.equal(escapeMd('*MOON*'), '\\*MOON\\*')
-    assert.equal(escapeMd('a`b'), 'a\\`b')
-    assert.equal(escapeMd('[x]'), '\\[x\\]')
+  // HTML is used rather than legacy Markdown because a backtick inside a code
+  // span is not escapable in Markdown at all.
+  test('escapes every HTML special character', async () => {
+    const { escapeHtml } = await import('../src/multi/status.ts')
+    assert.equal(escapeHtml('a<b'), 'a&lt;b')
+    assert.equal(escapeHtml('a>b'), 'a&gt;b')
+    assert.equal(escapeHtml('a&b'), 'a&amp;b')
+  })
+
+  test('escapes the ampersand first so entities are not double-escaped', async () => {
+    const { escapeHtml } = await import('../src/multi/status.ts')
+    assert.equal(escapeHtml('&lt;'), '&amp;lt;', 'an ampersand already in the text must survive as one')
   })
 
   test('escapes a realistic hostile token symbol and revert string', async () => {
-    const { escapeMd } = await import('../src/multi/status.ts')
-    const hostile = 'symbol mismatch: contract says "PEPE_v2", expects "*REAL*"'
-    const out = escapeMd(hostile)
-    // Every control char must be backslash-prefixed.
-    for (const m of out.matchAll(/(^|[^\\])([_*`[\]])/g)) {
-      assert.fail(`unescaped ${m[2]} in: ${out}`)
-    }
+    const { escapeHtml } = await import('../src/multi/status.ts')
+    const hostile = 'symbol mismatch: contract says "<b>PEPE</b>", expects "A&B"'
+    const out = escapeHtml(hostile)
+    assert.ok(!/<[a-z/]/i.test(out), `tag survived escaping: ${out}`)
+    assert.ok(!/&(?!amp;|lt;|gt;)/.test(out), `bare ampersand survived: ${out}`)
+  })
+
+  test('a backtick needs no escaping, unlike under Markdown', async () => {
+    // This is the case that broke the old parser: there is no way to escape a
+    // backtick inside a Markdown code span, so a label containing one killed
+    // the whole message.
+    const { escapeHtml } = await import('../src/multi/status.ts')
+    assert.equal(escapeHtml('wallet `main`'), 'wallet `main`')
   })
 
   test('leaves ordinary text and addresses untouched', async () => {
-    const { escapeMd } = await import('../src/multi/status.ts')
-    assert.equal(escapeMd('Burning 25.0 USDC on Base'), 'Burning 25.0 USDC on Base')
+    const { escapeHtml } = await import('../src/multi/status.ts')
+    assert.equal(escapeHtml('Burning 25.0 USDC on Base'), 'Burning 25.0 USDC on Base')
     assert.equal(
-      escapeMd('0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913'),
+      escapeHtml('0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913'),
       '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913',
     )
   })
 
   test('the bot escapes status detail and wallet labels', () => {
     const src = readFileSync(new URL('../src/multi/bot.ts', import.meta.url), 'utf8')
-    assert.match(src, /escapeMd\(mine\.detail\)/, 'status detail must be escaped')
-    assert.match(src, /escapeMd\(w\.label\)/, 'wallet labels must be escaped')
+    assert.match(src, /escapeHtml\(mine\.detail\)/, 'status detail must be escaped')
+    assert.match(src, /escapeHtml\(w\.label\)/, 'wallet labels must be escaped')
+  })
+
+  test('every emitted tag is supported by Telegram and balanced', () => {
+    // Telegram rejects the whole message on an unknown or unclosed tag, and the
+    // failure is invisible: the 400 is swallowed and the menu just stops
+    // updating.
+    //
+    // Only string literals are scanned. Scanning raw source would drown in
+    // TypeScript generics (Promise<bigint>, Map<string, ...>), and skipping
+    // unrecognised names to dodge that would defeat the point of the check -
+    // an unsupported tag is exactly what we are looking for.
+    const src = readFileSync(new URL('../src/multi/bot.ts', import.meta.url), 'utf8')
+    const code = src.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '')
+    const literals = [...code.matchAll(/`(?:[^`\\]|\\.)*`|'(?:[^'\\\n]|\\.)*'|"(?:[^"\\\n]|\\.)*"/g)]
+      .map((m) => m[0])
+      .join('\n')
+
+    const allowed = new Set(['b', 'strong', 'i', 'em', 'u', 'ins', 's', 'strike', 'del', 'code', 'pre', 'a', 'tg-spoiler', 'blockquote'])
+    const depth = new Map<string, number>()
+    const unsupported = new Set<string>()
+    for (const [, slash, name] of literals.matchAll(/<(\/?)([a-zA-Z][a-zA-Z0-9-]*)(?:\s[^>]*)?>/g)) {
+      if (!allowed.has(name!)) {
+        unsupported.add(name!)
+        continue
+      }
+      depth.set(name!, (depth.get(name!) ?? 0) + (slash ? -1 : 1))
+    }
+
+    assert.deepEqual([...unsupported], [], `Telegram does not support these tags: ${[...unsupported].join(', ')}`)
+    const unbalanced = [...depth].filter(([, n]) => n !== 0)
+    assert.deepEqual(unbalanced, [], `unbalanced tags: ${unbalanced.map(([t, n]) => `<${t}> ${n}`).join(', ')}`)
+    assert.ok(depth.size > 0, 'the check must actually be finding tags')
   })
 
   test('render falls back to plain text on a parse failure', () => {
     const src = readFileSync(new URL('../src/multi/bot.ts', import.meta.url), 'utf8')
-    assert.match(src, /can't parse entities/, 'render must detect Markdown parse errors')
-    assert.match(src, /stripMd/, 'render must have a plain-text fallback')
+    assert.match(src, /can't parse entities/, 'render must detect parse errors')
+    assert.match(src, /stripTags/, 'render must have a plain-text fallback')
+  })
+})
+
+describe('address display', () => {
+  const src = readFileSync(new URL('../src/multi/bot.ts', import.meta.url), 'utf8')
+
+  test('no truncated address is ever put inside a code span', () => {
+    // Telegram code spans are tap-to-copy. A "0x1234...abcd" in one hands the
+    // user a string that looks like an address and is not one. Truncation also
+    // plays into address poisoning, which works by matching the leading and
+    // trailing characters - the middle is the part that identifies it.
+    const offenders = [...src.matchAll(/<code>[^<]*\$\{[^}]*short\(/g)].map((m) => m[0])
+    assert.deepEqual(offenders, [], `short() must never appear inside <code>: ${offenders.join(', ')}`)
+  })
+
+  test('short() survives only for button labels and toasts', () => {
+    assert.match(src, /Button labels and toasts only/, 'the constraint must be documented at the definition')
+  })
+
+  test('the withdrawal confirm card shows the destination in full', () => {
+    const i = src.indexOf("case 'withdraw': {")
+    const body = src.slice(i, i + 1800)
+    assert.match(body, /<code>\$\{escapeHtml\(settled\.withdrawalAddress\)\}<\/code>/)
+    assert.match(body, /character by character/, 'the card must tell the user to verify it')
+  })
+})
+
+describe('amount presets', () => {
+  const src = readFileSync(new URL('../src/multi/bot.ts', import.meta.url), 'utf8')
+
+  test('a preset value rides on a ticket, never in callback_data', () => {
+    // Invariant 2: a hand-rolled MTProto client can send any <=64-byte payload,
+    // so a button must never carry the amount it would set.
+    assert.match(src, /ticketData\(user, 'settings\.set', \{ field, value/, 'presets must be ticket-backed')
+    assert.ok(
+      !/'nav:[a-z_]*\$\{(v|value|amount|raw|bps)\}/.test(src),
+      'no nav route may interpolate an amount',
+    )
+  })
+
+  test('the preset value is re-validated against the live user, not the card', () => {
+    const i = src.indexOf("case 'settings.set': {")
+    const body = src.slice(i, i + 700)
+    assert.match(body, /applyAmount\(user, field/, 'must validate against the re-read user')
+  })
+
+  test('only presets that would be accepted are offered', () => {
+    // A button that exists but always refuses is worse than one that is absent.
+    assert.match(src, /presets\.filter\(\(v\) => checkAmount\(user, field, v\)\.ok\)/)
+  })
+
+  test('a picker with no viable preset explains why', () => {
+    assert.match(src, /No preset fits right now/)
+  })
+})
+
+describe('callback query is answered before slow work', () => {
+  // Telegram spins the button until the query is answered and drops it after
+  // roughly ten seconds. Answering only in `finally` meant a slow RPC left the
+  // button spinning and then failed the answer outright.
+  const src = readFileSync(new URL('../src/multi/bot.ts', import.meta.url), 'utf8')
+
+  test('ack is idempotent so the finally-block cannot double-answer', () => {
+    assert.match(src, /if \(answered\) return\s+answered = true/)
+  })
+
+  const slowRoutes: Array<[string, string]> = [
+    ["case 'wallets': {", 'walletsView'],
+    ["case 'root':", 'renderRoot'],
+    ["case 'withdraw': {", 'balancesFor'],
+  ]
+  for (const [marker, slowCall] of slowRoutes) {
+    test(`${marker.trim()} acks before ${slowCall}`, () => {
+      const i = src.indexOf(marker)
+      assert.ok(i > 0, `route ${marker} not found`)
+      const body = src.slice(i, i + 900)
+      const ackAt = body.indexOf('await ack(')
+      const slowAt = body.indexOf(slowCall)
+      assert.ok(ackAt > 0 && ackAt < slowAt, `${slowCall} must not run before the query is answered`)
+    })
+  }
+
+  const slowActions: Array<[string, string]> = [
+    ["case 'wallet.new': {", 'addGeneratedWallet'], // scrypt KDF, deliberately slow
+    ["case 'wallet.withdraw': {", 'withdrawAll'], // a real chain send
+  ]
+  for (const [marker, slowCall] of slowActions) {
+    test(`${marker.trim()} acks before ${slowCall}`, () => {
+      const i = src.indexOf(marker)
+      assert.ok(i > 0, `action ${marker} not found`)
+      const body = src.slice(i, i + 900)
+      const ackAt = body.indexOf('await ack(')
+      const slowAt = body.indexOf(slowCall)
+      assert.ok(ackAt > 0, 'action must answer the query')
+      assert.ok(slowAt > 0, `${slowCall} not found in the action body`)
+      assert.ok(ackAt < slowAt, `${slowCall} must not run before the query is answered`)
+    })
+  }
+})
+
+describe('prompts and next steps', () => {
+  const src = readFileSync(new URL('../src/multi/bot.ts', import.meta.url), 'utf8')
+
+  test('every prompt offers a visible way out', () => {
+    // Navigating away already cancels a prompt, but that was undiscoverable.
+    assert.match(src, /async function prompt\(ctx: Context, text: string, cancelRoute: string\)/)
+    assert.match(src, /new InlineKeyboard\(\)\.text\('Cancel', cancelRoute\)/)
+    const promptCalls = [...src.matchAll(/await prompt\(/g)]
+    assert.ok(promptCalls.length >= 6, `every typed-input route should use it; found ${promptCalls.length}`)
+  })
+
+  test('the root card derives a next step from actual state', () => {
+    assert.match(src, /function nextStep\(user: StoredUser, bal: Balances\)/)
+    assert.match(src, /<b>Next:<\/b>/)
+  })
+
+  test('the next step puts the withdrawal address before funding', () => {
+    // Setting it while empty is instant; after funds arrive the same change
+    // costs 24 hours. The wrong order silently costs the user a day.
+    const i = src.indexOf('function nextStep(')
+    const body = src.slice(i, i + 1200)
+    assert.ok(
+      body.indexOf('withdrawalAddress') < body.indexOf('Fund this wallet'),
+      'the withdrawal-address hint must come first',
+    )
+    assert.match(body, /it applies instantly/, 'the hint must say why the order matters')
+  })
+
+  test('the command list is registered so /panic is discoverable', () => {
+    assert.match(src, /setMyCommands/)
+    assert.match(src, /command: 'panic'/)
+  })
+})
+
+describe('balance reads', () => {
+  const src = readFileSync(new URL('../src/multi/bot.ts', import.meta.url), 'utf8')
+
+  test('unknown is distinguished from zero', () => {
+    assert.match(src, /usdc: string \| null/, 'null must mean "could not read"')
+    assert.match(src, /balance unavailable - RPC unreachable/)
+  })
+
+  test('an unreadable balance fails SAFE on the withdrawal time lock', () => {
+    // The old check treated an unreadable balance as "no funds", which applied
+    // the address change instantly - so catching the RPC down skipped the
+    // 24-hour lock entirely.
+    assert.match(src, /bal\.usdc === null \? true : Number\(bal\.usdc\) > 0/)
+  })
+
+  test('the withdraw card refuses to render an unknown balance as an amount', () => {
+    const i = src.indexOf("case 'withdraw': {")
+    const body = src.slice(i, i + 1200)
+    assert.match(body, /bal\.usdc === null/, 'must handle an unreadable balance explicitly')
+  })
+
+  test('wallet balances are read in parallel, not one at a time', () => {
+    assert.match(src, /Promise\.all\(user\.wallets\.map\(\(w\) => balancesFor/)
+  })
+
+  test('failures are not cached', () => {
+    assert.match(src, /Failures are NOT cached/)
   })
 })
 
